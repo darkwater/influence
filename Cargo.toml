@@ -1,12 +1,12 @@
 [package]
 name = "influence"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Sam Lakerveld <darkwater124@gmail.com>"]
 
 [dependencies]
-gtk            = { git = "https://github.com/gtk-rs/gtk.git", features = [ "v3_20" ] }
-gdk            = { git = "https://github.com/gtk-rs/gdk.git", features = [ "v3_20" ] }
-cairo-rs       = { git = "https://github.com/gtk-rs/cairo.git" }
-gdk-sys        = { git = "https://github.com/gtk-rs/sys.git", features = [ "v3_20" ] }
-# gtk-sys        = { git = "https://github.com/gtk-rs/sys.git", features = [ "v3_20" ] }
-# gdk-pixbuf     = { git = "https://github.com/gtk-rs/gdk-pixbuf.git" }
+cairo-rs        = "0.3.0"
+gdk             = "0.7.0"
+gtk             = { version = "0.3.0", features = [ "v3_10" ] }
+relm            = "0.11.0"
+relm-derive     = "0.11.0"
+# gdk-sys       = "0.3.0"
