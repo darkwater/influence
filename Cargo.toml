@@ -6,7 +6,7 @@ authors = ["Sam Lakerveld <darkwater124@gmail.com>"]
 [dependencies]
 cairo-rs        = "0.3.0"
 gdk             = "0.7.0"
-gtk             = { version = "0.3.0", features = [ "v3_10" ] }
+gtk             = { version = "0.3.0", features = [ "v3_16" ] }
 relm            = "0.11.0"
 relm-derive     = "0.11.0"
 # gdk-sys       = "0.3.0"

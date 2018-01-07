@@ -1,0 +1,12 @@
+label {
+    padding: 5px 10px;
+}
+
+list > row:focus {
+    background: #215d9c;
+    outline: none;
+}
+
+entry {
+    padding: 0px 10px;
+}
