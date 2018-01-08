@@ -1,4 +1,3 @@
-#![feature(proc_macro)]
 extern crate gdk;
 extern crate gtk;
 #[macro_use]
@@ -21,12 +20,19 @@ pub struct Model {
 
 #[derive(Msg)]
 pub enum Msg {
-    Filter(Option<String>),
+    FilterBookmarks(Option<String>),
     MoveBookmarkSelection(i32),
+    RunCommand(bool, CommandSource),
     Quit,
 }
 
+pub enum CommandSource {
+    BookmarkSelection(bool), // true to use entry as fallback
+    Entry,
+}
+
 struct Win {
+    relm: Relm<Win>,
     model: Model,
     window: Window,
     bookmarks_listbox: gtk::ListBox,
@@ -49,8 +55,9 @@ impl Update for Win {
 
     fn update(&mut self, event: Self::Msg) {
         match event {
-            Msg::Filter(s)                  => self.filter_bookmarks(s),
+            Msg::FilterBookmarks(substr)    => self.filter_bookmarks(substr),
             Msg::MoveBookmarkSelection(dir) => self.move_bookmark_selection(dir),
+            Msg::RunCommand(exit, source)   => self.run_command_from_source(source, exit),
             Msg::Quit                       => gtk::main_quit(),
         }
     }
@@ -64,6 +71,7 @@ impl Widget for Win {
     }
 
     fn view(relm: &Relm<Self>, model: Self::Model) -> Self {
+        // Create window
         let window = gtk::Window::new(gtk::WindowType::Toplevel);
         window.set_wmclass("influence", "influence");
         window.set_type_hint(gdk::WindowTypeHint::Dialog);
@@ -71,6 +79,7 @@ impl Widget for Win {
         window.set_decorated(false);
         window.stick();
 
+        // Position window
         let screen = window.get_screen().unwrap();
         let monitor_id = screen.get_primary_monitor();
         let monitor = screen.get_monitor_geometry(monitor_id);
@@ -83,18 +92,21 @@ impl Widget for Win {
         window.move_(window_x, window_y);
         window.set_size_request(window_width, window_height);
 
+        // Enable transparency
         window.set_app_paintable(true);
         let visual = screen.get_rgba_visual().unwrap();
         window.set_visual(Some(&visual));
 
+        // Apply custom application CSS
         let css_provider = gtk::CssProvider::new();
         let _ = css_provider.load_from_data(include_bytes!("main.css"));
         gtk::StyleContext::add_provider_for_screen(&screen, &css_provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+
+        // Setup UI
         let container = gtk::Box::new(gtk::Orientation::Vertical, 0);
         window.add(&container);
 
-        // -- Bookmark list --
-
+        // UI: Bookmark list
         let scroller = gtk::ScrolledWindow::new(None, None);
         let cmdlist = gtk::ListBox::new();
         cmdlist.set_vexpand(true);
@@ -114,8 +126,7 @@ impl Widget for Win {
             cmdlist.select_row(last_row.as_ref());
         }
 
-        // -- Command input --
-
+        // UI: Command input
         let input = gtk::Entry::new();
         container.add(&input);
 
@@ -123,7 +134,7 @@ impl Widget for Win {
             relm,
             input,
             connect_changed(widget),
-            Some(Msg::Filter(widget.get_text()))
+            Some(Msg::FilterBookmarks(widget.get_text()))
         );
 
         connect!(
@@ -132,61 +143,25 @@ impl Widget for Win {
             connect_key_press_event(_, key),
             return {
                 use gdk::enums::key;
+                use gdk::ModifierType;
+                let state = key.get_state();
+
                 match key.get_keyval() {
-                    key::Up   => (Some(Msg::MoveBookmarkSelection(-1)), Inhibit(true)),
-                    key::Down => (Some(Msg::MoveBookmarkSelection( 1)), Inhibit(true)),
-                    _         => (None,                                 Inhibit(false)),
+                    key::Up     => (Some(Msg::MoveBookmarkSelection(-1)), Inhibit(true)),
+                    key::Down   => (Some(Msg::MoveBookmarkSelection( 1)), Inhibit(true)),
+                    key::Return => if state.is_empty() {
+                        (Some(Msg::RunCommand(true, CommandSource::BookmarkSelection(true))), Inhibit(true))
+                    } else if state == ModifierType::SHIFT_MASK {
+                        (Some(Msg::RunCommand(true, CommandSource::Entry)), Inhibit(true))
+                    } else {
+                        (None, Inhibit(false))
+                    },
+                    _           => (None, Inhibit(false)),
                 }
             }
         );
 
-        // input.connect_changed(clone!(cmdlist => move |widget| {
-        //     (*cmdlist).filter(widget.get_text().unwrap_or("".to_string()));
-        // }));
-
-        // input.connect_key_press_event(|input, event| {
-        //     use gdk::enums::key;
-
-        //     match event.get_keyval() {
-        //         key::Return => {
-        //             run_command_and_exit(&input.get_text().unwrap_or("".to_string()));
-        //             Inhibit(true)
-        //         },
-
-        //         key::Escape => {
-        //             gtk::main_quit();
-        //             Inhibit(true)
-        //         }
-
-        //         _ => Inhibit(false)
-        //     }
-        // });
-
-        // let bookmarks = cmdlist.bookmarks.clone();
-        // cmdlist.command_list.connect_key_press_event(clone!(input => move |cmdlist, event| {
-        //     use gdk::enums::key;
-
-        //     match event.get_keyval() {
-        //         key::Tab => {
-        //             let index = cmdlist.get_children().iter().position(|n| n.has_focus()).unwrap();
-        //             let cmd = &bookmarks[index];
-        //             input.set_text(&cmd);
-        //             input.grab_focus_without_selecting();
-        //             input.set_position(-1);
-        //             Inhibit(true)
-        //         },
-
-        //         key::Return => {
-        //             let index = cmdlist.get_children().iter().position(|n| n.has_focus()).unwrap();
-        //             let cmd = &bookmarks[index];
-        //             run_command_and_exit(cmd);
-        //             Inhibit(true)
-        //         },
-
-        //         _ => Inhibit(false)
-        //     }
-        // }));
-
+        // Window events
         connect!(
             relm,
             window,
@@ -220,15 +195,27 @@ impl Widget for Win {
                 alpha: 0xeb as f64 / 255.0,
             });
 
+        let relm = relm.clone();
+
         Win {
             bookmarks_listbox: cmdlist,
             command_entry: input,
-            model, window
+            relm, model, window
         }
     }
 }
 
 impl Win {
+    fn select_bottom_bookmark(&self) {
+        for index in (0..(self.model.bookmarks.len() as i32)).rev() {
+            let row = self.bookmarks_listbox.get_row_at_index(index);
+            if let Some(row) = row.and_then(|r| if r.is_visible() { Some(r) } else { None }) {
+                self.bookmarks_listbox.select_row(Some(&row));
+                break;
+            }
+        }
+    }
+
     fn filter_bookmarks(&self, substr: Option<String>) {
         let substr = substr.unwrap_or_default();
         for (i, bookmark) in self.model.bookmarks.iter().enumerate() {
@@ -242,24 +229,57 @@ impl Win {
         // If the current selection went invisible, select the new bottom-most entry
         let selected = self.bookmarks_listbox.get_selected_row();
         if selected.is_none() || !selected.unwrap().is_visible() {
-            for index in (0..(self.model.bookmarks.len() as i32 - 1)).rev() {
-                let row = self.bookmarks_listbox.get_row_at_index(index);
-                if let Some(row) = row.and_then(|r| if r.is_visible() { Some(r) } else { None }) {
-                    self.bookmarks_listbox.select_row(Some(&row));
-                    break;
-                }
-            }
+            self.select_bottom_bookmark();
         }
 
         // Scroll to the bottom
-        if let Some(adj) = self.bookmarks_listbox.get_adjustment() {
-            adj.set_value(adj.get_upper());
-        }
+        let listbox = self.bookmarks_listbox.clone();
+        gtk::timeout_add(10, move || {
+            if let Some(adj) = listbox.get_adjustment() {
+                adj.set_value(adj.get_upper());
+            }
+            Continue(false)
+        });
     }
 
     fn move_bookmark_selection(&self, dir: i32) {
         self.bookmarks_listbox.emit_move_cursor(gtk::MovementStep::DisplayLines, dir);
         self.command_entry.grab_focus_without_selecting();
+    }
+
+    fn run_command_from_source(&self, source: CommandSource, exit: bool) {
+        match source {
+            CommandSource::BookmarkSelection(or_entry) => {
+                let selected_row = self.bookmarks_listbox
+                    .get_selected_row()
+                    .and_then(|r| if r.is_visible() { Some(r) } else { None })
+                    .map(|r| r.get_index());
+
+                if let Some(index) = selected_row {
+                    let bookmark = self.model.bookmarks[index as usize].clone();
+                    self.run_command(bookmark, exit);
+                } else if or_entry {
+                    self.run_command_from_source(CommandSource::Entry, exit);
+                }
+            },
+            CommandSource::Entry => {
+                if let Some(cmd) = self.command_entry.get_text() {
+                    self.run_command(cmd, exit);
+                }
+            }
+        }
+    }
+
+    fn run_command(&self, cmd: String, exit: bool) {
+        let _ = Command::new("/bin/bash")
+            .arg("-c")
+            .arg(cmd)
+            .spawn()
+            .expect("failed to execute child");
+
+        if exit {
+            self.relm.stream().emit(Msg::Quit);
+        }
     }
 }
 
@@ -277,16 +297,6 @@ fn read_bookmarks() -> Result<Vec<String>, Box<std::error::Error>> {
         .collect::<Vec<String>>();
 
     Ok(bookmarks)
-}
-
-fn run_command_and_exit(cmd: &str) {
-    let _ = Command::new("/bin/bash")
-        .arg("-c")
-        .arg(cmd)
-        .spawn()
-        .expect("failed to execute child");
-
-    // TODO: send Quit message
 }
 
 fn main() {
