@@ -130,6 +130,13 @@ impl Widget for Win {
             cmdlist.select_row(last_row.as_ref());
         }
 
+        connect!(
+            relm,
+            cmdlist,
+            connect_row_activated(_, _),
+            Some(Msg::RunCommand(CommandSource::BookmarkSelection(false), true))
+        );
+
         // UI: Command input
         let input = gtk::Entry::new();
         container.add(&input);
