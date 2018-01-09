@@ -15,14 +15,17 @@ use std::path::PathBuf;
 use std::process::Command;
 
 pub struct Model {
-    bookmarks: Vec<String>,
+    bookmarks: Vec<Bookmark>,
 }
+
+pub type Bookmark = String;
 
 #[derive(Msg)]
 pub enum Msg {
     FilterBookmarks(Option<String>),
     MoveBookmarkSelection(i32),
-    RunCommand(bool, CommandSource),
+    RunCommand(CommandSource, bool),
+    CompleteEntry,
     Quit,
 }
 
@@ -57,7 +60,8 @@ impl Update for Win {
         match event {
             Msg::FilterBookmarks(substr)    => self.filter_bookmarks(substr),
             Msg::MoveBookmarkSelection(dir) => self.move_bookmark_selection(dir),
-            Msg::RunCommand(exit, source)   => self.run_command_from_source(source, exit),
+            Msg::RunCommand(source, exit)   => self.run_command_from_source(source, exit),
+            Msg::CompleteEntry              => self.complete_entry(),
             Msg::Quit                       => gtk::main_quit(),
         }
     }
@@ -147,16 +151,29 @@ impl Widget for Win {
                 let state = key.get_state();
 
                 match key.get_keyval() {
-                    key::Up     => (Some(Msg::MoveBookmarkSelection(-1)), Inhibit(true)),
-                    key::Down   => (Some(Msg::MoveBookmarkSelection( 1)), Inhibit(true)),
-                    key::Return => if state.is_empty() {
-                        (Some(Msg::RunCommand(true, CommandSource::BookmarkSelection(true))), Inhibit(true))
-                    } else if state == ModifierType::SHIFT_MASK {
-                        (Some(Msg::RunCommand(true, CommandSource::Entry)), Inhibit(true))
-                    } else {
-                        (None, Inhibit(false))
+                    // Move through bookmarks list
+                    key::Up   => (Some(Msg::MoveBookmarkSelection(-1)), Inhibit(true)),
+                    key::Down => (Some(Msg::MoveBookmarkSelection( 1)), Inhibit(true)),
+
+                    // Run the command
+                    key::Return => {
+                        // Hold shift to execute command as entered without completing
+                        let source = if state.contains(ModifierType::SHIFT_MASK) {
+                            CommandSource::Entry
+                        } else {
+                            CommandSource::BookmarkSelection(true)
+                        };
+
+                        // Hold control to not quit influence afterwards
+                        let exit = !state.contains(ModifierType::CONTROL_MASK);
+
+                        (Some(Msg::RunCommand(source, exit)), Inhibit(true))
                     },
-                    _           => (None, Inhibit(false)),
+
+                    // Fill entry with selected bookmark
+                    key::Tab => (Some(Msg::CompleteEntry), Inhibit(true)),
+
+                    _ => (None, Inhibit(false)),
                 }
             }
         );
@@ -247,16 +264,17 @@ impl Win {
         self.command_entry.grab_focus_without_selecting();
     }
 
+    fn get_selected_bookmark(&self) -> Option<Bookmark> {
+        self.bookmarks_listbox
+            .get_selected_row()
+            .and_then(|r| if r.is_visible() { Some(r) } else { None })
+            .map(|r| self.model.bookmarks[r.get_index() as usize].clone())
+    }
+
     fn run_command_from_source(&self, source: CommandSource, exit: bool) {
         match source {
             CommandSource::BookmarkSelection(or_entry) => {
-                let selected_row = self.bookmarks_listbox
-                    .get_selected_row()
-                    .and_then(|r| if r.is_visible() { Some(r) } else { None })
-                    .map(|r| r.get_index());
-
-                if let Some(index) = selected_row {
-                    let bookmark = self.model.bookmarks[index as usize].clone();
+                if let Some(bookmark) = self.get_selected_bookmark() {
                     self.run_command(bookmark, exit);
                 } else if or_entry {
                     self.run_command_from_source(CommandSource::Entry, exit);
@@ -279,6 +297,13 @@ impl Win {
 
         if exit {
             self.relm.stream().emit(Msg::Quit);
+        }
+    }
+
+    fn complete_entry(&self) {
+        if let Some(bookmark) = self.get_selected_bookmark() {
+            self.command_entry.set_text(&bookmark);
+            self.command_entry.set_position(bookmark.len() as i32);
         }
     }
 }
