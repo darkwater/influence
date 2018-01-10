@@ -16,9 +16,20 @@ use std::process::Command;
 
 pub struct Model {
     bookmarks: Vec<Bookmark>,
+    state: State,
 }
 
 pub type Bookmark = String;
+
+pub enum State {
+    Bookmarks,
+    History,
+}
+
+static STATE_MENU_ORDER: &[(i32, State, &str)] = &[
+    (0, State::Bookmarks, "Bookmarks"),
+    (1, State::History,   "History"),
+];
 
 #[derive(Msg)]
 pub enum Msg {
@@ -53,7 +64,9 @@ impl Update for Win {
             Default::default()
         });
 
-        Model { bookmarks }
+        let state = State::Bookmarks;
+
+        Model { bookmarks, state }
     }
 
     fn update(&mut self, event: Self::Msg) {
@@ -94,63 +107,102 @@ impl Widget for Win {
         let window_x = monitor.x + padding;
         let window_y = monitor.y + monitor.height - padding - window_height;
         window.move_(window_x, window_y);
-        window.set_size_request(window_width, window_height);
+        window.set_default_size(window_width, window_height);
 
-        // Enable transparency
-        window.set_app_paintable(true);
-        let visual = screen.get_rgba_visual().unwrap();
-        window.set_visual(Some(&visual));
+        // // Enable transparency
+        // window.set_app_paintable(true);
+        // let visual = screen.get_rgba_visual().unwrap();
+        // window.set_visual(Some(&visual));
 
         // Apply custom application CSS
         let css_provider = gtk::CssProvider::new();
         let _ = css_provider.load_from_data(include_bytes!("main.css"));
         gtk::StyleContext::add_provider_for_screen(&screen, &css_provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
 
-        // Setup UI
-        let container = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        window.add(&container);
+        // Setup UI like this:
+        // Window
+        //  '- Box #root_container
+        //      |- Box #top_container
+        //      |   |- ScrolledWindow - ListBox #menulist
+        //      |   '- ScrolledWindow - ListBox #cmdlist
+        //      '- Entry #input
+        let root_container = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let top_container = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        root_container.set_spacing(5);
+        top_container.set_spacing(5);
+        window.set_border_width(5);
+        root_container.add(&top_container);
+        window.add(&root_container);
+
+        // UI: State menu
+        let scroller = gtk::ScrolledWindow::new(None, None);
+        scroller.set_hexpand(false);
+        scroller.set_size_request(120, -1);
+        let statelist = gtk::ListBox::new();
+        statelist.set_hexpand(true);
+        statelist.set_vexpand(true);
+        statelist.set_valign(gtk::Align::Fill);
+        scroller.add(&statelist);
+        top_container.add(&scroller);
+
+        for &(_, _, ref label) in STATE_MENU_ORDER {
+            let label = gtk::Label::new(Some(*label));
+            label.set_halign(gtk::Align::Start);
+            label.set_size_request(-1, 25);
+            statelist.add(&label);
+        }
 
         // UI: Bookmark list
         let scroller = gtk::ScrolledWindow::new(None, None);
-        let cmdlist = gtk::ListBox::new();
-        cmdlist.set_vexpand(true);
-        cmdlist.set_valign(gtk::Align::End);
-        scroller.add(&cmdlist);
-        container.add(&scroller);
+        let bookmarks_listbox = gtk::ListBox::new();
+        bookmarks_listbox.set_hexpand(true);
+        bookmarks_listbox.set_vexpand(true);
+        bookmarks_listbox.set_valign(gtk::Align::Fill);
+        scroller.add(&bookmarks_listbox);
+        top_container.add(&scroller);
 
         for bookmark in &model.bookmarks {
             let label = gtk::Label::new(Some(bookmark.as_str()));
             label.set_halign(gtk::Align::Start);
             label.set_size_request(-1, 25);
-            cmdlist.add(&label);
+            bookmarks_listbox.add(&label);
         }
 
         if model.bookmarks.len() > 0 {
-            let last_row = cmdlist.get_row_at_index(model.bookmarks.len() as i32 - 1);
-            cmdlist.select_row(last_row.as_ref());
+            let last_row = bookmarks_listbox.get_row_at_index(model.bookmarks.len() as i32 - 1);
+            bookmarks_listbox.select_row(last_row.as_ref());
         }
+
+        // Scroll to the bottom
+        let cmdlist_c = bookmarks_listbox.clone();
+        gtk::timeout_add(10, move || {
+            if let Some(adj) = cmdlist_c.get_adjustment() {
+                adj.set_value(adj.get_upper());
+            }
+            Continue(false)
+        });
 
         connect!(
             relm,
-            cmdlist,
+            bookmarks_listbox,
             connect_row_activated(_, _),
             Some(Msg::RunCommand(CommandSource::BookmarkSelection(false), true))
         );
 
         // UI: Command input
-        let input = gtk::Entry::new();
-        container.add(&input);
+        let command_entry = gtk::Entry::new();
+        root_container.add(&command_entry);
 
         connect!(
             relm,
-            input,
+            command_entry,
             connect_changed(widget),
             Some(Msg::FilterBookmarks(widget.get_text()))
         );
 
         connect!(
             relm,
-            input,
+            command_entry,
             connect_key_press_event(_, key),
             return {
                 use gdk::enums::key;
@@ -207,24 +259,23 @@ impl Widget for Win {
         );
 
         window.show_all();
-        input.grab_focus();
+        command_entry.grab_focus();
 
-        window
-            .get_window()
-            .unwrap()
-            .set_background_rgba(&gdk::RGBA {
-                red: 0x1d as f64 / 255.0,
-                green: 0x1f as f64 / 255.0,
-                blue: 0x21 as f64 / 255.0,
-                alpha: 0xeb as f64 / 255.0,
-            });
+        // window
+        //     .get_window()
+        //     .unwrap()
+        //     .set_background_rgba(&gdk::RGBA {
+        //         red: 0x1d as f64 / 255.0,
+        //         green: 0x1f as f64 / 255.0,
+        //         blue: 0x21 as f64 / 255.0,
+        //         alpha: 0xeb as f64 / 255.0,
+        //     });
 
         let relm = relm.clone();
 
         Win {
-            bookmarks_listbox: cmdlist,
-            command_entry: input,
-            relm, model, window
+            relm, model, window,
+            bookmarks_listbox, command_entry,
         }
     }
 }
@@ -266,6 +317,7 @@ impl Win {
         });
     }
 
+    // FIXME: Doesn't work until the user changes selection manually
     fn move_bookmark_selection(&self, dir: i32) {
         self.bookmarks_listbox.emit_move_cursor(gtk::MovementStep::DisplayLines, dir);
         self.command_entry.grab_focus_without_selecting();
@@ -295,12 +347,14 @@ impl Win {
         }
     }
 
-    fn run_command(&self, cmd: String, exit: bool) {
+    fn run_command(&self, mut cmd: String, exit: bool) {
+        cmd.push('&');
         let _ = Command::new("/bin/bash")
             .arg("-c")
             .arg(cmd)
             .spawn()
-            .expect("failed to execute child");
+            .expect("failed to execute child")
+            .wait();
 
         if exit {
             self.relm.stream().emit(Msg::Quit);
@@ -334,26 +388,3 @@ fn read_bookmarks() -> Result<Vec<String>, Box<std::error::Error>> {
 fn main() {
     Win::run(()).unwrap();
 }
-
-// macro_rules! clone {
-//     (@param _ ) => ( _ );
-//     (@param $x:ident) => ( $x );
-//     ($($n:ident),+ => move || $body:expr) => (
-//         {
-//             $( let $n = $n.clone(); )+
-//             move || $body
-//         }
-//     );
-//     ($($n:ident),+ => move |$($p:tt),+| $body:expr) => (
-//         {
-//             $( let $n = $n.clone(); )+
-//             move |$(clone!(@param $p),)+| $body
-//         }
-//     );
-//     ($($n:ident),+ => move |$($p:tt : $z:ty),+| $body:expr) => (
-//         {
-//             $( let $n = $n.clone(); )+
-//             move |$(clone!(@param $p) : $z,)+| $body
-//         }
-//     );
-// }
