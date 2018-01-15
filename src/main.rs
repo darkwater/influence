@@ -9,40 +9,56 @@ use gdk::prelude::*;
 use gtk::Window;
 use gtk::prelude::*;
 use relm::{Relm, Update, Widget};
+use std::cell::Cell;
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::PathBuf;
 use std::process::Command;
 
-pub struct Model {
-    bookmarks: Vec<Bookmark>,
-    state: State,
-}
+const STATE_BOOKMARKS_LABEL: &str = "Bookmarks";
+const STATE_MENU: &[(i32, State, &str)] = &[
+    (0, State::Bookmarks, STATE_BOOKMARKS_LABEL),
+    (1, State::History,   "History"),
+];
 
-pub type Bookmark = String;
-
-pub enum State {
+enum FileStore {
     Bookmarks,
     History,
 }
 
-static STATE_MENU_ORDER: &[(i32, State, &str)] = &[
-    (0, State::Bookmarks, "Bookmarks"),
-    (1, State::History,   "History"),
-];
+struct Model {
+    bookmarks: Vec<String>,
+    history: Vec<String>,
+    state: Cell<State>,
+}
+
+enum State {
+    Bookmarks,
+    History,
+    Searching,
+}
 
 #[derive(Msg)]
-pub enum Msg {
-    FilterBookmarks(Option<String>),
-    MoveBookmarkSelection(i32),
-    RunCommand(CommandSource, bool),
+enum Msg {
+    CommandInputChanged(String),
+    MoveListSelection(i32),
+    RunCommandFromSource(CommandSource, RunOptions),
+    RunCommand(String, RunOptions),
     CompleteEntry,
     Quit,
 }
 
-pub enum CommandSource {
-    BookmarkSelection(bool), // true to use entry as fallback
+enum CommandSource {
+    ListSelection(bool), // true to use entry as fallback
     Entry,
+}
+
+struct RunOptions {
+    /// Whether to quit after running the command
+    quit: bool,
+
+    /// Whether to add this command to the history
+    record: bool,
 }
 
 struct Win {
@@ -59,23 +75,29 @@ impl Update for Win {
     type Msg = Msg;
 
     fn model(_relm: &Relm<Self>, _param: Self::ModelParam) -> Model {
-        let bookmarks = read_bookmarks().unwrap_or_else(|e| {
+        let bookmarks = read_file_list(FileStore::Bookmarks).unwrap_or_else(|e| {
             println!("unable to read bookmarks: {}", e);
             Default::default()
         });
 
-        let state = State::Bookmarks;
+        let history = read_file_list(FileStore::History).unwrap_or_else(|e| {
+            println!("unable to read history: {}", e);
+            Default::default()
+        });
 
-        Model { bookmarks, state }
+        let state = Cell::new(State::Bookmarks);
+
+        Model { bookmarks, history, state }
     }
 
     fn update(&mut self, event: Self::Msg) {
         match event {
-            Msg::FilterBookmarks(substr)    => self.filter_bookmarks(substr),
-            Msg::MoveBookmarkSelection(dir) => self.move_bookmark_selection(dir),
-            Msg::RunCommand(source, exit)   => self.run_command_from_source(source, exit),
-            Msg::CompleteEntry              => self.complete_entry(),
-            Msg::Quit                       => gtk::main_quit(),
+            Msg::CommandInputChanged(s)          => self.command_input_changed(s),
+            Msg::MoveListSelection(dir)          => self.move_list_selection(dir),
+            Msg::RunCommandFromSource(src, opts) => self.run_command_from_source(src, opts),
+            Msg::RunCommand(s, opts)             => self.run_command(s, opts),
+            Msg::CompleteEntry                   => self.complete_entry(),
+            Msg::Quit                            => gtk::main_quit(),
         }
     }
 }
@@ -94,6 +116,7 @@ impl Widget for Win {
         window.set_type_hint(gdk::WindowTypeHint::Dialog);
         window.set_keep_above(true);
         window.set_decorated(false);
+        window.set_border_width(5);
         window.stick();
 
         // Position window
@@ -122,35 +145,16 @@ impl Widget for Win {
         // Setup UI like this:
         // Window
         //  '- Box #root_container
-        //      |- Box #top_container
-        //      |   |- ScrolledWindow - ListBox #menulist
-        //      |   '- ScrolledWindow - ListBox #cmdlist
-        //      '- Entry #input
+        //      |- Notebook #notebook
+        //      |   '- ScrolledWindow - ListBox #bookmarks_listbox
+        //      '- Entry #command_entry
         let root_container = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        let top_container = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         root_container.set_spacing(5);
-        top_container.set_spacing(5);
-        window.set_border_width(5);
-        root_container.add(&top_container);
         window.add(&root_container);
 
-        // UI: State menu
-        let scroller = gtk::ScrolledWindow::new(None, None);
-        scroller.set_hexpand(false);
-        scroller.set_size_request(120, -1);
-        let statelist = gtk::ListBox::new();
-        statelist.set_hexpand(true);
-        statelist.set_vexpand(true);
-        statelist.set_valign(gtk::Align::Fill);
-        scroller.add(&statelist);
-        top_container.add(&scroller);
-
-        for &(_, _, ref label) in STATE_MENU_ORDER {
-            let label = gtk::Label::new(Some(*label));
-            label.set_halign(gtk::Align::Start);
-            label.set_size_request(-1, 25);
-            statelist.add(&label);
-        }
+        let notebook = gtk::Notebook::new();
+        notebook.set_tab_pos(gtk::PositionType::Left);
+        root_container.add(&notebook);
 
         // UI: Bookmark list
         let scroller = gtk::ScrolledWindow::new(None, None);
@@ -159,7 +163,8 @@ impl Widget for Win {
         bookmarks_listbox.set_vexpand(true);
         bookmarks_listbox.set_valign(gtk::Align::Fill);
         scroller.add(&bookmarks_listbox);
-        top_container.add(&scroller);
+        notebook.add(&scroller);
+        notebook.set_tab_label_text(&scroller, STATE_BOOKMARKS_LABEL);
 
         for bookmark in &model.bookmarks {
             let label = gtk::Label::new(Some(bookmark.as_str()));
@@ -185,8 +190,15 @@ impl Widget for Win {
         connect!(
             relm,
             bookmarks_listbox,
-            connect_row_activated(_, _),
-            Some(Msg::RunCommand(CommandSource::BookmarkSelection(false), true))
+            connect_row_activated(_, row),
+            {
+                let label = row.get_child().unwrap().downcast::<gtk::Label>().unwrap();
+                let cmd = label.get_text().map(|s| s.to_string()).unwrap_or_default();
+                Some(Msg::RunCommand(cmd, RunOptions {
+                    quit: true,
+                    record: true,
+                }))
+            }
         );
 
         // UI: Command input
@@ -197,7 +209,7 @@ impl Widget for Win {
             relm,
             command_entry,
             connect_changed(widget),
-            Some(Msg::FilterBookmarks(widget.get_text()))
+            Some(Msg::CommandInputChanged(widget.get_text().unwrap_or_default()))
         );
 
         connect!(
@@ -210,9 +222,9 @@ impl Widget for Win {
                 let state = key.get_state();
 
                 match key.get_keyval() {
-                    // Move through bookmarks list
-                    key::Up   => (Some(Msg::MoveBookmarkSelection(-1)), Inhibit(true)),
-                    key::Down => (Some(Msg::MoveBookmarkSelection( 1)), Inhibit(true)),
+                    // Move through list
+                    key::Up   => (Some(Msg::MoveListSelection(-1)), Inhibit(true)),
+                    key::Down => (Some(Msg::MoveListSelection( 1)), Inhibit(true)),
 
                     // Run the command
                     key::Return => {
@@ -220,13 +232,18 @@ impl Widget for Win {
                         let source = if state.contains(ModifierType::SHIFT_MASK) {
                             CommandSource::Entry
                         } else {
-                            CommandSource::BookmarkSelection(true)
+                            CommandSource::ListSelection(true)
                         };
 
-                        // Hold control to not quit influence afterwards
-                        let exit = !state.contains(ModifierType::CONTROL_MASK);
+                        let opts = RunOptions {
+                            // Hold control to not quit influence afterwards
+                            quit: !state.contains(ModifierType::CONTROL_MASK),
 
-                        (Some(Msg::RunCommand(source, exit)), Inhibit(true))
+                            // Hold alt to not record this command
+                            record: !state.contains(ModifierType::MOD1_MASK),
+                        };
+
+                        (Some(Msg::RunCommandFromSource(source, opts)), Inhibit(true))
                     },
 
                     // Fill entry with selected bookmark
@@ -291,63 +308,47 @@ impl Win {
         }
     }
 
-    fn filter_bookmarks(&self, substr: Option<String>) {
-        let substr = substr.unwrap_or_default();
-        for (i, bookmark) in self.model.bookmarks.iter().enumerate() {
-            let row = self.bookmarks_listbox.get_row_at_index(i as i32).unwrap();
-            match bookmark.contains(&substr) {
-                true  => row.show(),
-                false => row.hide(),
+    fn command_input_changed(&self, s: String) {
+        let last_state = self.model.state.replace(State::Searching);
+        match last_state {
+            State::Searching => (),
+            _ => {
+                
             }
         }
-
-        // If the current selection went invisible, select the new bottom-most entry
-        let selected = self.bookmarks_listbox.get_selected_row();
-        if selected.is_none() || !selected.unwrap().is_visible() {
-            self.select_bottom_bookmark();
-        }
-
-        // Scroll to the bottom
-        let listbox = self.bookmarks_listbox.clone();
-        gtk::timeout_add(10, move || {
-            if let Some(adj) = listbox.get_adjustment() {
-                adj.set_value(adj.get_upper());
-            }
-            Continue(false)
-        });
     }
 
     // FIXME: Doesn't work until the user changes selection manually
-    fn move_bookmark_selection(&self, dir: i32) {
+    fn move_list_selection(&self, dir: i32) {
         self.bookmarks_listbox.emit_move_cursor(gtk::MovementStep::DisplayLines, dir);
         self.command_entry.grab_focus_without_selecting();
     }
 
-    fn get_selected_bookmark(&self) -> Option<Bookmark> {
+    fn get_selected_bookmark(&self) -> Option<String> {
         self.bookmarks_listbox
             .get_selected_row()
             .and_then(|r| if r.is_visible() { Some(r) } else { None })
             .map(|r| self.model.bookmarks[r.get_index() as usize].clone())
     }
 
-    fn run_command_from_source(&self, source: CommandSource, exit: bool) {
+    fn run_command_from_source(&self, source: CommandSource, opts: RunOptions) {
         match source {
-            CommandSource::BookmarkSelection(or_entry) => {
+            CommandSource::ListSelection(or_entry) => {
                 if let Some(bookmark) = self.get_selected_bookmark() {
-                    self.run_command(bookmark, exit);
+                    self.run_command(bookmark, opts);
                 } else if or_entry {
-                    self.run_command_from_source(CommandSource::Entry, exit);
+                    self.run_command_from_source(CommandSource::Entry, opts);
                 }
             },
             CommandSource::Entry => {
                 if let Some(cmd) = self.command_entry.get_text() {
-                    self.run_command(cmd, exit);
+                    self.run_command(cmd, opts);
                 }
             }
         }
     }
 
-    fn run_command(&self, mut cmd: String, exit: bool) {
+    fn run_command(&self, mut cmd: String, opts: RunOptions) {
         cmd.push('&');
         let _ = Command::new("/bin/bash")
             .arg("-c")
@@ -356,7 +357,7 @@ impl Win {
             .expect("failed to execute child")
             .wait();
 
-        if exit {
+        if opts.quit {
             self.relm.stream().emit(Msg::Quit);
         }
     }
@@ -369,10 +370,14 @@ impl Win {
     }
 }
 
-/// Read bookmarks from configuration file
-fn read_bookmarks() -> Result<Vec<String>, Box<std::error::Error>> {
+/// Read a list of commands from a file
+fn read_file_list(store: FileStore) -> Result<Vec<String>, Box<std::error::Error>> {
     let mut path = PathBuf::from(std::env::var("HOME")?);
-    path.push(".config/influence/bookmarks.txt");
+
+    match store {
+        FileStore::Bookmarks => path.push(".config/influence/bookmarks.txt"),
+        FileStore::History   => path.push(".config/influence/history.txt"),
+    }
 
     let mut string = String::new();
     let mut file = File::open(path)?;
