@@ -9,17 +9,14 @@ use gdk::prelude::*;
 use gtk::Window;
 use gtk::prelude::*;
 use relm::{Relm, Update, Widget};
-use std::cell::Cell;
 use std::fs::File;
+use std::io::BufWriter;
 use std::io::prelude::*;
 use std::path::PathBuf;
 use std::process::Command;
 
-const STATE_BOOKMARKS_LABEL: &str = "Bookmarks";
-const STATE_MENU: &[(i32, State, &str)] = &[
-    (0, State::Bookmarks, STATE_BOOKMARKS_LABEL),
-    (1, State::History,   "History"),
-];
+const MENU_BOOKMARKS_LABEL: &str = "Bookmarks";
+const MENU_HISTORY_LABEL:   &str = "History";
 
 enum FileStore {
     Bookmarks,
@@ -29,13 +26,6 @@ enum FileStore {
 struct Model {
     bookmarks: Vec<String>,
     history: Vec<String>,
-    state: Cell<State>,
-}
-
-enum State {
-    Bookmarks,
-    History,
-    Searching,
 }
 
 #[derive(Msg)]
@@ -44,8 +34,15 @@ enum Msg {
     MoveListSelection(i32),
     RunCommandFromSource(CommandSource, RunOptions),
     RunCommand(String, RunOptions),
+    ShiftFocus(FocusTarget),
+    SelectPage(i32),
     CompleteEntry,
     Quit,
+}
+
+enum FocusTarget {
+    Notebook, // the current tab in the notebook
+    Entry,
 }
 
 enum CommandSource {
@@ -67,6 +64,7 @@ struct Win {
     window: Window,
     bookmarks_listbox: gtk::ListBox,
     command_entry: gtk::Entry,
+    notebook: gtk::Notebook,
 }
 
 impl Update for Win {
@@ -85,9 +83,7 @@ impl Update for Win {
             Default::default()
         });
 
-        let state = Cell::new(State::Bookmarks);
-
-        Model { bookmarks, history, state }
+        Model { bookmarks, history }
     }
 
     fn update(&mut self, event: Self::Msg) {
@@ -96,6 +92,8 @@ impl Update for Win {
             Msg::MoveListSelection(dir)          => self.move_list_selection(dir),
             Msg::RunCommandFromSource(src, opts) => self.run_command_from_source(src, opts),
             Msg::RunCommand(s, opts)             => self.run_command(s, opts),
+            Msg::ShiftFocus(target)              => self.shift_focus(target),
+            Msg::SelectPage(page)                => self.select_page(page),
             Msg::CompleteEntry                   => self.complete_entry(),
             Msg::Quit                            => gtk::main_quit(),
         }
@@ -156,7 +154,7 @@ impl Widget for Win {
         notebook.set_tab_pos(gtk::PositionType::Left);
         root_container.add(&notebook);
 
-        // UI: Bookmark list
+        // UI: Bookmarks
         let scroller = gtk::ScrolledWindow::new(None, None);
         let bookmarks_listbox = gtk::ListBox::new();
         bookmarks_listbox.set_hexpand(true);
@@ -164,7 +162,7 @@ impl Widget for Win {
         bookmarks_listbox.set_valign(gtk::Align::Fill);
         scroller.add(&bookmarks_listbox);
         notebook.add(&scroller);
-        notebook.set_tab_label_text(&scroller, STATE_BOOKMARKS_LABEL);
+        notebook.set_tab_label_text(&scroller, MENU_BOOKMARKS_LABEL);
 
         for bookmark in &model.bookmarks {
             let label = gtk::Label::new(Some(bookmark.as_str()));
@@ -173,23 +171,71 @@ impl Widget for Win {
             bookmarks_listbox.add(&label);
         }
 
-        if model.bookmarks.len() > 0 {
-            let last_row = bookmarks_listbox.get_row_at_index(model.bookmarks.len() as i32 - 1);
-            bookmarks_listbox.select_row(last_row.as_ref());
+        if let Some(first_row) = bookmarks_listbox.get_row_at_index(0) {
+            bookmarks_listbox.set_focus_child(&first_row);
         }
-
-        // Scroll to the bottom
-        let cmdlist_c = bookmarks_listbox.clone();
-        gtk::timeout_add(10, move || {
-            if let Some(adj) = cmdlist_c.get_adjustment() {
-                adj.set_value(adj.get_upper());
-            }
-            Continue(false)
-        });
 
         connect!(
             relm,
             bookmarks_listbox,
+            connect_row_activated(_, row),
+            {
+                let label = row.get_child().unwrap().downcast::<gtk::Label>().unwrap();
+                let cmd = label.get_text().map(|s| s.to_string()).unwrap_or_default();
+                Some(Msg::RunCommand(cmd, RunOptions {
+                    quit: true,
+                    record: true,
+                }))
+            }
+        );
+
+        connect!(
+            relm,
+            bookmarks_listbox,
+            connect_key_press_event(_, key),
+            return {
+                use gdk::enums::key;
+                match key.get_keyval() {
+                    key::Tab => (Some(Msg::ShiftFocus(FocusTarget::Entry)), Inhibit(true)),
+                    _ => (None, Inhibit(false)),
+                }
+            }
+        );
+
+        // UI: History
+        let scroller = gtk::ScrolledWindow::new(None, None);
+        let history_listbox = gtk::ListBox::new();
+        history_listbox.set_hexpand(true);
+        history_listbox.set_vexpand(true);
+        history_listbox.set_valign(gtk::Align::Fill);
+        scroller.add(&history_listbox);
+        notebook.add(&scroller);
+        notebook.set_tab_label_text(&scroller, MENU_HISTORY_LABEL);
+
+        for entry in &model.history {
+            let label = gtk::Label::new(Some(entry.as_str()));
+            label.set_halign(gtk::Align::Start);
+            label.set_size_request(-1, 25);
+            history_listbox.add(&label);
+        }
+
+        // if model.bookmarks.len() > 0 {
+        //     let last_row = history_listbox.get_row_at_index(model.bookmarks.len() as i32 - 1);
+        //     history_listbox.select_row(last_row.as_ref());
+        // }
+
+        // // Scroll to the bottom
+        // let cmdlist_c = history_listbox.clone();
+        // gtk::timeout_add(10, move || {
+        //     if let Some(adj) = cmdlist_c.get_adjustment() {
+        //         adj.set_value(adj.get_upper());
+        //     }
+        //     Continue(false)
+        // });
+
+        connect!(
+            relm,
+            history_listbox,
             connect_row_activated(_, row),
             {
                 let label = row.get_child().unwrap().downcast::<gtk::Label>().unwrap();
@@ -223,17 +269,13 @@ impl Widget for Win {
 
                 match key.get_keyval() {
                     // Move through list
-                    key::Up   => (Some(Msg::MoveListSelection(-1)), Inhibit(true)),
-                    key::Down => (Some(Msg::MoveListSelection( 1)), Inhibit(true)),
+                    // key::Up   => (Some(Msg::MoveListSelection(-1)), Inhibit(true)),
+                    // key::Down => (Some(Msg::MoveListSelection( 1)), Inhibit(true)),
+                    key::Down => (Some(Msg::ShiftFocus(FocusTarget::Notebook)), Inhibit(true)),
 
                     // Run the command
                     key::Return => {
-                        // Hold shift to execute command as entered without completing
-                        let source = if state.contains(ModifierType::SHIFT_MASK) {
-                            CommandSource::Entry
-                        } else {
-                            CommandSource::ListSelection(true)
-                        };
+                        let source = CommandSource::Entry;
 
                         let opts = RunOptions {
                             // Hold control to not quit influence afterwards
@@ -261,9 +303,12 @@ impl Widget for Win {
             connect_key_press_event(_, key),
             return {
                 use gdk::enums::key;
+                let alt_held = key.get_state().contains(gdk::ModifierType::MOD1_MASK);
                 match key.get_keyval() {
-                    key::Escape => (Some(Msg::Quit), Inhibit(true)),
-                    _           => (None,            Inhibit(false)),
+                    key::Escape         => (Some(Msg::Quit),          Inhibit(true)),
+                    key::_1 if alt_held => (Some(Msg::SelectPage(0)), Inhibit(true)),
+                    key::_2 if alt_held => (Some(Msg::SelectPage(1)), Inhibit(true)),
+                    _                   => (None,                     Inhibit(false)),
                 }
             }
         );
@@ -274,6 +319,11 @@ impl Widget for Win {
             connect_delete_event(_, _),
             return (Some(Msg::Quit), Inhibit(false))
         );
+
+        for tab in notebook.get_children().iter() {
+            let label = notebook.get_tab_label(tab).unwrap();
+            label.set_halign(gtk::Align::Start);
+        }
 
         window.show_all();
         command_entry.grab_focus();
@@ -292,7 +342,7 @@ impl Widget for Win {
 
         Win {
             relm, model, window,
-            bookmarks_listbox, command_entry,
+            bookmarks_listbox, command_entry, notebook,
         }
     }
 }
@@ -308,14 +358,28 @@ impl Win {
         }
     }
 
-    fn command_input_changed(&self, s: String) {
-        let last_state = self.model.state.replace(State::Searching);
-        match last_state {
-            State::Searching => (),
-            _ => {
-                
+    fn shift_focus(&self, target: FocusTarget) {
+        match target {
+            FocusTarget::Notebook => {
+                if let Some(row) = self.bookmarks_listbox.get_focus_child() {
+                    row.grab_focus();
+                } else if let Some(row) = self.bookmarks_listbox.get_selected_row() {
+                    row.grab_focus();
+                } else {
+                    self.bookmarks_listbox.emit_move_cursor(gtk::MovementStep::DisplayLines, 0);
+                }
+            },
+            FocusTarget::Entry => {
+                self.command_entry.grab_focus();
             }
         }
+    }
+
+    fn select_page(&self, page: i32) {
+        self.notebook.set_property_page(page);
+    }
+
+    fn command_input_changed(&mut self, s: String) {
     }
 
     // FIXME: Doesn't work until the user changes selection manually
@@ -331,7 +395,7 @@ impl Win {
             .map(|r| self.model.bookmarks[r.get_index() as usize].clone())
     }
 
-    fn run_command_from_source(&self, source: CommandSource, opts: RunOptions) {
+    fn run_command_from_source(&mut self, source: CommandSource, opts: RunOptions) {
         match source {
             CommandSource::ListSelection(or_entry) => {
                 if let Some(bookmark) = self.get_selected_bookmark() {
@@ -348,14 +412,21 @@ impl Win {
         }
     }
 
-    fn run_command(&self, mut cmd: String, opts: RunOptions) {
-        cmd.push('&');
+    fn run_command(&mut self, cmd: String, opts: RunOptions) {
         let _ = Command::new("/bin/bash")
             .arg("-c")
-            .arg(cmd)
+            .arg(format!("{} &", cmd))
             .spawn()
             .expect("failed to execute child")
             .wait();
+
+        if opts.record {
+            self.model.history.retain(|c| c != &cmd);
+            self.model.history.push(cmd);
+            if let Err(e) = write_file_list(FileStore::History, &self.model.history) {
+                println!("unable to read bookmarks: {}", e);
+            }
+        }
 
         if opts.quit {
             self.relm.stream().emit(Msg::Quit);
@@ -368,6 +439,25 @@ impl Win {
             self.command_entry.set_position(bookmark.len() as i32);
         }
     }
+}
+
+fn write_file_list(store: FileStore, list: &Vec<String>) -> Result<(), Box<std::error::Error>> {
+    let mut path = PathBuf::from(std::env::var("HOME")?);
+
+    match store {
+        FileStore::Bookmarks => path.push(".config/influence/bookmarks.txt"),
+        FileStore::History   => path.push(".config/influence/history.txt"),
+    }
+
+    let file       = File::create(path)?;
+    let mut writer = BufWriter::new(file);
+
+    for line in list.iter() {
+        writer.write(line.as_bytes())?;
+        writer.write("\n".as_bytes())?;
+    }
+
+    Ok(())
 }
 
 /// Read a list of commands from a file

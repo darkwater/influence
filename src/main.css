@@ -1,12 +1,18 @@
-label {
-    padding: 5px 10px;
-}
-
 list > row:focus {
     background: #215d9c;
     outline: none;
 }
 
+list > row label {
+    padding: 5px 10px;
+}
+
 entry {
     padding: 0px 10px;
+}
+
+notebook > header.left > tabs > tab {
+    margin: 0;
+    padding: 2px 15px;
+    padding-right: 20px;
 }
