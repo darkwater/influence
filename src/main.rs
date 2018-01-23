@@ -18,6 +18,8 @@ use std::process::Command;
 const MENU_BOOKMARKS_LABEL: &str = "Bookmarks";
 const MENU_HISTORY_LABEL:   &str = "History";
 
+const HISTORY_MAXLEN: usize = 5;
+
 enum FileStore {
     Bookmarks,
     History,
@@ -114,21 +116,24 @@ impl Widget for Win {
         window.set_type_hint(gdk::WindowTypeHint::Dialog);
         window.set_keep_above(true);
         window.set_decorated(false);
-        window.set_border_width(5);
         window.stick();
 
         // Position window
         let screen = window.get_screen().unwrap();
         let monitor_id = screen.get_primary_monitor();
         let monitor = screen.get_monitor_geometry(monitor_id);
+        let resolution = (screen.get_property_resolution() / 96.0)
+            / (screen.get_monitor_scale_factor(monitor_id) as f64);
+        let res_scale = |i: i32| ((i as f64) * resolution) as i32;
 
-        let padding = 40;
-        let window_width = 600;
-        let window_height = 250;
+        let padding = res_scale(40);
+        let window_width = res_scale(500);
+        let window_height = res_scale(250);
         let window_x = monitor.x + padding;
         let window_y = monitor.y + monitor.height - padding - window_height;
         window.move_(window_x, window_y);
         window.set_default_size(window_width, window_height);
+        window.set_border_width(res_scale(5) as u32);
 
         // // Enable transparency
         // window.set_app_paintable(true);
@@ -147,7 +152,7 @@ impl Widget for Win {
         //      |   '- ScrolledWindow - ListBox #bookmarks_listbox
         //      '- Entry #command_entry
         let root_container = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        root_container.set_spacing(5);
+        root_container.set_spacing(res_scale(5));
         window.add(&root_container);
 
         let notebook = gtk::Notebook::new();
@@ -249,6 +254,7 @@ impl Widget for Win {
 
         // UI: Command input
         let command_entry = gtk::Entry::new();
+        command_entry.set_size_request(-1, res_scale(30));
         root_container.add(&command_entry);
 
         connect!(
@@ -422,7 +428,8 @@ impl Win {
 
         if opts.record {
             self.model.history.retain(|c| c != &cmd);
-            self.model.history.push(cmd);
+            self.model.history.insert(0, cmd);
+            self.model.history.truncate(HISTORY_MAXLEN);
             if let Err(e) = write_file_list(FileStore::History, &self.model.history) {
                 println!("unable to read bookmarks: {}", e);
             }
