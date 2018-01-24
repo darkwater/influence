@@ -1,3 +1,5 @@
+#![feature(conservative_impl_trait, nll)]
+
 extern crate gdk;
 extern crate gtk;
 #[macro_use]
@@ -25,6 +27,13 @@ enum FileStore {
     History,
 }
 
+// Used during gui initialization
+struct Context<'a> {
+    res_scale: &'a Fn(i32) -> i32,
+    model:     &'a Model,
+    relm:      &'a Relm<Win>,
+}
+
 struct Model {
     bookmarks: Vec<String>,
     history: Vec<String>,
@@ -37,9 +46,14 @@ enum Msg {
     RunCommandFromSource(CommandSource, RunOptions),
     RunCommand(String, RunOptions),
     ShiftFocus(FocusTarget),
-    SelectPage(i32),
+    SelectPage(Page),
     CompleteEntry,
     Quit,
+}
+
+enum Page {
+    Abs(i32), // page 1, page 2, ...
+    Rel(i32), // next page (1), prev page (-1)
 }
 
 enum FocusTarget {
@@ -61,12 +75,12 @@ struct RunOptions {
 }
 
 struct Win {
-    relm: Relm<Win>,
-    model: Model,
-    window: Window,
+    relm:              Relm<Win>,
+    model:             Model,
+    window:            Window,
     bookmarks_listbox: gtk::ListBox,
-    command_entry: gtk::Entry,
-    notebook: gtk::Notebook,
+    command_entry:     gtk::Entry,
+    notebook:          gtk::Notebook,
 }
 
 impl Update for Win {
@@ -135,22 +149,18 @@ impl Widget for Win {
         window.set_default_size(window_width, window_height);
         window.set_border_width(res_scale(5) as u32);
 
-        // // Enable transparency
-        // window.set_app_paintable(true);
-        // let visual = screen.get_rgba_visual().unwrap();
-        // window.set_visual(Some(&visual));
-
         // Apply custom application CSS
         let css_provider = gtk::CssProvider::new();
         let _ = css_provider.load_from_data(include_bytes!("main.css"));
         gtk::StyleContext::add_provider_for_screen(&screen, &css_provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
 
-        // Setup UI like this:
-        // Window
-        //  '- Box #root_container
-        //      |- Notebook #notebook
-        //      |   '- ScrolledWindow - ListBox #bookmarks_listbox
-        //      '- Entry #command_entry
+        // Context for initializing the widgets
+        let context = Context {
+            res_scale: &res_scale,
+            model: &model,
+            relm
+        };
+
         let root_container = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root_container.set_spacing(res_scale(5));
         window.add(&root_container);
@@ -160,16 +170,94 @@ impl Widget for Win {
         root_container.add(&notebook);
 
         // UI: Bookmarks
+        let bookmarks_listbox = Self::gui_init_bookmarks_listbox(&context);
         let scroller = gtk::ScrolledWindow::new(None, None);
-        let bookmarks_listbox = gtk::ListBox::new();
-        bookmarks_listbox.set_hexpand(true);
-        bookmarks_listbox.set_vexpand(true);
-        bookmarks_listbox.set_valign(gtk::Align::Fill);
         scroller.add(&bookmarks_listbox);
         notebook.add(&scroller);
         notebook.set_tab_label_text(&scroller, MENU_BOOKMARKS_LABEL);
 
-        for bookmark in &model.bookmarks {
+        // UI: History
+        let scroller = gtk::ScrolledWindow::new(None, None);
+        let history_listbox = Self::gui_init_history_listbox(&context);
+        scroller.add(&history_listbox);
+        notebook.add(&scroller);
+        notebook.set_tab_label_text(&scroller, MENU_HISTORY_LABEL);
+
+        // UI: Command input
+        let command_entry = Self::gui_init_command_entry(&context);
+        root_container.add(&command_entry);
+
+        // Window events
+        connect!(
+            relm,
+            window,
+            connect_key_press_event(_, key),
+            return {
+                use gdk::enums::key;
+                use Page::{Abs, Rel};
+                let alt_held = key.get_state().contains(gdk::ModifierType::MOD1_MASK);
+                match key.get_keyval() {
+                    key::Escape           => (Some(Msg::Quit),                Inhibit(true)),
+                    key::_1 if alt_held   => (Some(Msg::SelectPage(Abs(0))),  Inhibit(true)),
+                    key::_2 if alt_held   => (Some(Msg::SelectPage(Abs(1))),  Inhibit(true)),
+                    key::_3 if alt_held   => (Some(Msg::SelectPage(Abs(2))),  Inhibit(true)),
+                    key::_4 if alt_held   => (Some(Msg::SelectPage(Abs(3))),  Inhibit(true)),
+                    key::_5 if alt_held   => (Some(Msg::SelectPage(Abs(4))),  Inhibit(true)),
+                    key::_6 if alt_held   => (Some(Msg::SelectPage(Abs(5))),  Inhibit(true)),
+                    key::_7 if alt_held   => (Some(Msg::SelectPage(Abs(6))),  Inhibit(true)),
+                    key::_8 if alt_held   => (Some(Msg::SelectPage(Abs(7))),  Inhibit(true)),
+                    key::_9 if alt_held   => (Some(Msg::SelectPage(Abs(8))),  Inhibit(true)),
+                    key::_0 if alt_held   => (Some(Msg::SelectPage(Abs(9))),  Inhibit(true)),
+                    key::Up if alt_held   => (Some(Msg::SelectPage(Rel(-1))), Inhibit(true)),
+                    key::Down if alt_held => (Some(Msg::SelectPage(Rel( 1))), Inhibit(true)),
+                    _                     => (None,                           Inhibit(false)),
+                }
+            }
+        );
+
+        connect!(
+            relm,
+            window,
+            connect_delete_event(_, _),
+            return (Some(Msg::Quit), Inhibit(false))
+        );
+
+        // Left-align all notebook tab labels
+        for tab in notebook.get_children().iter() {
+            let label = notebook.get_tab_label(tab).unwrap();
+            label.set_halign(gtk::Align::Start);
+        }
+
+        window.show_all();
+        command_entry.grab_focus();
+
+        // window
+        //     .get_window()
+        //     .unwrap()
+        //     .set_background_rgba(&gdk::RGBA {
+        //         red: 0x1d as f64 / 255.0,
+        //         green: 0x1f as f64 / 255.0,
+        //         blue: 0x21 as f64 / 255.0,
+        //         alpha: 0xeb as f64 / 255.0,
+        //     });
+
+        let relm = relm.clone();
+
+        Win {
+            relm, model, window,
+            bookmarks_listbox, command_entry, notebook,
+        }
+    }
+}
+
+impl Win {
+    fn gui_init_bookmarks_listbox(context: &Context) -> gtk::ListBox {
+        let bookmarks_listbox = gtk::ListBox::new();
+        bookmarks_listbox.set_hexpand(true);
+        bookmarks_listbox.set_vexpand(true);
+        bookmarks_listbox.set_valign(gtk::Align::Fill);
+
+        for bookmark in &context.model.bookmarks {
             let label = gtk::Label::new(Some(bookmark.as_str()));
             label.set_halign(gtk::Align::Start);
             label.set_size_request(-1, 25);
@@ -181,7 +269,7 @@ impl Widget for Win {
         }
 
         connect!(
-            relm,
+            context.relm,
             bookmarks_listbox,
             connect_row_activated(_, row),
             {
@@ -195,7 +283,7 @@ impl Widget for Win {
         );
 
         connect!(
-            relm,
+            context.relm,
             bookmarks_listbox,
             connect_key_press_event(_, key),
             return {
@@ -207,39 +295,24 @@ impl Widget for Win {
             }
         );
 
-        // UI: History
-        let scroller = gtk::ScrolledWindow::new(None, None);
+        bookmarks_listbox
+    }
+
+    fn gui_init_history_listbox(context: &Context) -> gtk::ListBox {
         let history_listbox = gtk::ListBox::new();
         history_listbox.set_hexpand(true);
         history_listbox.set_vexpand(true);
         history_listbox.set_valign(gtk::Align::Fill);
-        scroller.add(&history_listbox);
-        notebook.add(&scroller);
-        notebook.set_tab_label_text(&scroller, MENU_HISTORY_LABEL);
 
-        for entry in &model.history {
+        for entry in &context.model.history {
             let label = gtk::Label::new(Some(entry.as_str()));
             label.set_halign(gtk::Align::Start);
             label.set_size_request(-1, 25);
             history_listbox.add(&label);
         }
 
-        // if model.bookmarks.len() > 0 {
-        //     let last_row = history_listbox.get_row_at_index(model.bookmarks.len() as i32 - 1);
-        //     history_listbox.select_row(last_row.as_ref());
-        // }
-
-        // // Scroll to the bottom
-        // let cmdlist_c = history_listbox.clone();
-        // gtk::timeout_add(10, move || {
-        //     if let Some(adj) = cmdlist_c.get_adjustment() {
-        //         adj.set_value(adj.get_upper());
-        //     }
-        //     Continue(false)
-        // });
-
         connect!(
-            relm,
+            context.relm,
             history_listbox,
             connect_row_activated(_, row),
             {
@@ -252,20 +325,22 @@ impl Widget for Win {
             }
         );
 
-        // UI: Command input
+        history_listbox
+    }
+
+    fn gui_init_command_entry(context: &Context) -> gtk::Entry {
         let command_entry = gtk::Entry::new();
-        command_entry.set_size_request(-1, res_scale(30));
-        root_container.add(&command_entry);
+        command_entry.set_size_request(-1, (context.res_scale)(30));
 
         connect!(
-            relm,
+            context.relm,
             command_entry,
             connect_changed(widget),
             Some(Msg::CommandInputChanged(widget.get_text().unwrap_or_default()))
         );
 
         connect!(
-            relm,
+            context.relm,
             command_entry,
             connect_key_press_event(_, key),
             return {
@@ -302,58 +377,9 @@ impl Widget for Win {
             }
         );
 
-        // Window events
-        connect!(
-            relm,
-            window,
-            connect_key_press_event(_, key),
-            return {
-                use gdk::enums::key;
-                let alt_held = key.get_state().contains(gdk::ModifierType::MOD1_MASK);
-                match key.get_keyval() {
-                    key::Escape         => (Some(Msg::Quit),          Inhibit(true)),
-                    key::_1 if alt_held => (Some(Msg::SelectPage(0)), Inhibit(true)),
-                    key::_2 if alt_held => (Some(Msg::SelectPage(1)), Inhibit(true)),
-                    _                   => (None,                     Inhibit(false)),
-                }
-            }
-        );
-
-        connect!(
-            relm,
-            window,
-            connect_delete_event(_, _),
-            return (Some(Msg::Quit), Inhibit(false))
-        );
-
-        for tab in notebook.get_children().iter() {
-            let label = notebook.get_tab_label(tab).unwrap();
-            label.set_halign(gtk::Align::Start);
-        }
-
-        window.show_all();
-        command_entry.grab_focus();
-
-        // window
-        //     .get_window()
-        //     .unwrap()
-        //     .set_background_rgba(&gdk::RGBA {
-        //         red: 0x1d as f64 / 255.0,
-        //         green: 0x1f as f64 / 255.0,
-        //         blue: 0x21 as f64 / 255.0,
-        //         alpha: 0xeb as f64 / 255.0,
-        //     });
-
-        let relm = relm.clone();
-
-        Win {
-            relm, model, window,
-            bookmarks_listbox, command_entry, notebook,
-        }
+        command_entry
     }
-}
 
-impl Win {
     fn select_bottom_bookmark(&self) {
         for index in (0..(self.model.bookmarks.len() as i32)).rev() {
             let row = self.bookmarks_listbox.get_row_at_index(index);
@@ -381,8 +407,13 @@ impl Win {
         }
     }
 
-    fn select_page(&self, page: i32) {
-        self.notebook.set_property_page(page);
+    fn select_page(&self, page: Page) {
+        match page {
+            Page::Abs(n)  => self.notebook.set_property_page(n),
+            Page::Rel(-1) => self.notebook.prev_page(),
+            Page::Rel( 1) => self.notebook.next_page(),
+            Page::Rel(_)  => unimplemented!()
+        }
     }
 
     fn command_input_changed(&mut self, s: String) {
