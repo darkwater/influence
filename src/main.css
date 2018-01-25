@@ -1,18 +1,24 @@
+window {
+    font-size: calc(10pt * $DPI);
+}
+
 list > row:focus {
     background: #215d9c;
     outline: none;
 }
 
 list > row label {
-    padding: 0.4em 0.9em;
+    padding: calc(5pt * $DPI) calc(10pt * $DPI);
 }
 
 entry {
-    padding: 0em 0.8em;
+    min-height: 0;
+    padding: calc(4pt * $DPI) calc(10pt * $DPI);
 }
 
 notebook > header.left > tabs > tab {
+    min-height: 0;
     margin: 0;
-    padding: 0.5em 1.2em;
-    padding-right: 1.4em;
+    padding: calc(5pt * $DPI) calc(10pt * $DPI);
+    padding-right: calc(15pt * $DPI);
 }

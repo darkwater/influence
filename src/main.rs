@@ -136,9 +136,9 @@ impl Widget for Win {
         let screen = window.get_screen().unwrap();
         let monitor_id = screen.get_primary_monitor();
         let monitor = screen.get_monitor_geometry(monitor_id);
-        let resolution = (screen.get_property_resolution() / 96.0)
-            / (screen.get_monitor_scale_factor(monitor_id) as f64);
+        let resolution = screen.get_resolution() / 96.0;
         let res_scale = |i: i32| ((i as f64) * resolution) as i32;
+        screen.set_resolution(96.0);
 
         let padding = res_scale(40);
         let window_width = res_scale(500);
@@ -151,7 +151,8 @@ impl Widget for Win {
 
         // Apply custom application CSS
         let css_provider = gtk::CssProvider::new();
-        let _ = css_provider.load_from_data(include_bytes!("main.css"));
+        let stylesheet = include_str!("main.css").replace("$DPI", &resolution.to_string());
+        let _ = css_provider.load_from_data(stylesheet.as_bytes());
         gtk::StyleContext::add_provider_for_screen(&screen, &css_provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
 
         // Context for initializing the widgets
@@ -330,7 +331,6 @@ impl Win {
 
     fn gui_init_command_entry(context: &Context) -> gtk::Entry {
         let command_entry = gtk::Entry::new();
-        command_entry.set_size_request(-1, (context.res_scale)(30));
 
         connect!(
             context.relm,
