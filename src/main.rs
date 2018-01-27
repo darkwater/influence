@@ -17,31 +17,34 @@ use std::io::prelude::*;
 use std::path::PathBuf;
 use std::process::Command;
 
+mod gui;
+
 const MENU_BOOKMARKS_LABEL: &str = "Bookmarks";
 const MENU_HISTORY_LABEL:   &str = "History";
 
 const HISTORY_MAXLEN: usize = 5;
 
-enum FileStore {
+pub enum FileStore {
     Bookmarks,
     History,
 }
 
 // Used during gui initialization
-struct Context<'a> {
+pub struct Context<'a> {
     res_scale: &'a Fn(i32) -> i32,
     model:     &'a Model,
     relm:      &'a Relm<Win>,
 }
 
-struct Model {
+pub struct Model {
     bookmarks: Vec<String>,
     history: Vec<String>,
 }
 
 #[derive(Msg)]
-enum Msg {
+pub enum Msg {
     CommandInputChanged(String),
+    PageSwitched(gtk::Widget),
     MoveListSelection(i32),
     RunCommandFromSource(CommandSource, RunOptions),
     RunCommand(String, RunOptions),
@@ -51,22 +54,22 @@ enum Msg {
     Quit,
 }
 
-enum Page {
+pub enum Page {
     Abs(i32), // page 1, page 2, ...
     Rel(i32), // next page (1), prev page (-1)
 }
 
-enum FocusTarget {
+pub enum FocusTarget {
     Notebook, // the current tab in the notebook
     Entry,
 }
 
-enum CommandSource {
+pub enum CommandSource {
     ListSelection(bool), // true to use entry as fallback
     Entry,
 }
 
-struct RunOptions {
+pub struct RunOptions {
     /// Whether to quit after running the command
     quit: bool,
 
@@ -74,13 +77,14 @@ struct RunOptions {
     record: bool,
 }
 
-struct Win {
+pub struct Win {
     relm:              Relm<Win>,
     model:             Model,
     window:            Window,
     bookmarks_listbox: gtk::ListBox,
     command_entry:     gtk::Entry,
     notebook:          gtk::Notebook,
+    current_tab:       gtk::Widget,
 }
 
 impl Update for Win {
@@ -105,6 +109,7 @@ impl Update for Win {
     fn update(&mut self, event: Self::Msg) {
         match event {
             Msg::CommandInputChanged(s)          => self.command_input_changed(s),
+            Msg::PageSwitched(page)              => self.page_switched(page),
             Msg::MoveListSelection(dir)          => self.move_list_selection(dir),
             Msg::RunCommandFromSource(src, opts) => self.run_command_from_source(src, opts),
             Msg::RunCommand(s, opts)             => self.run_command(s, opts),
@@ -136,8 +141,7 @@ impl Widget for Win {
         let screen = window.get_screen().unwrap();
         let monitor_id = screen.get_primary_monitor();
         let monitor = screen.get_monitor_geometry(monitor_id);
-        let resolution = (screen.get_property_resolution() / 96.0)
-            / (screen.get_monitor_scale_factor(monitor_id) as f64);
+        let resolution = screen.get_property_resolution() / 96.0;
         let res_scale = |i: i32| ((i as f64) * resolution) as i32;
 
         let padding = res_scale(40);
@@ -169,22 +173,31 @@ impl Widget for Win {
         notebook.set_tab_pos(gtk::PositionType::Left);
         root_container.add(&notebook);
 
+        connect!(
+            relm,
+            notebook,
+            connect_switch_page(_, widget, _index),
+            Some(Msg::PageSwitched(widget.clone()))
+        );
+
         // UI: Bookmarks
-        let bookmarks_listbox = Self::gui_init_bookmarks_listbox(&context);
+        let bookmarks_listbox = gui::init_bookmarks_listbox(&context);
         let scroller = gtk::ScrolledWindow::new(None, None);
         scroller.add(&bookmarks_listbox);
         notebook.add(&scroller);
         notebook.set_tab_label_text(&scroller, MENU_BOOKMARKS_LABEL);
 
+        let current_tab = bookmarks_listbox.clone().upcast();
+
         // UI: History
         let scroller = gtk::ScrolledWindow::new(None, None);
-        let history_listbox = Self::gui_init_history_listbox(&context);
+        let history_listbox = gui::init_history_listbox(&context);
         scroller.add(&history_listbox);
         notebook.add(&scroller);
         notebook.set_tab_label_text(&scroller, MENU_HISTORY_LABEL);
 
         // UI: Command input
-        let command_entry = Self::gui_init_command_entry(&context);
+        let command_entry = gui::init_command_entry(&context);
         root_container.add(&command_entry);
 
         // Window events
@@ -222,10 +235,10 @@ impl Widget for Win {
             return (Some(Msg::Quit), Inhibit(false))
         );
 
-        // Left-align all notebook tab labels
         for tab in notebook.get_children().iter() {
             let label = notebook.get_tab_label(tab).unwrap();
-            label.set_halign(gtk::Align::Start);
+            label.set_halign(gtk::Align::Start); // Left-align all notebook tab labels
+            notebook.set_tab_reorderable(tab, true);
         }
 
         window.show_all();
@@ -246,138 +259,14 @@ impl Widget for Win {
         Win {
             relm, model, window,
             bookmarks_listbox, command_entry, notebook,
+            current_tab
         }
     }
 }
 
 impl Win {
-    fn gui_init_bookmarks_listbox(context: &Context) -> gtk::ListBox {
-        let bookmarks_listbox = gtk::ListBox::new();
-        bookmarks_listbox.set_hexpand(true);
-        bookmarks_listbox.set_vexpand(true);
-        bookmarks_listbox.set_valign(gtk::Align::Fill);
-
-        for bookmark in &context.model.bookmarks {
-            let label = gtk::Label::new(Some(bookmark.as_str()));
-            label.set_halign(gtk::Align::Start);
-            label.set_size_request(-1, 25);
-            bookmarks_listbox.add(&label);
-        }
-
-        if let Some(first_row) = bookmarks_listbox.get_row_at_index(0) {
-            bookmarks_listbox.set_focus_child(&first_row);
-        }
-
-        connect!(
-            context.relm,
-            bookmarks_listbox,
-            connect_row_activated(_, row),
-            {
-                let label = row.get_child().unwrap().downcast::<gtk::Label>().unwrap();
-                let cmd = label.get_text().map(|s| s.to_string()).unwrap_or_default();
-                Some(Msg::RunCommand(cmd, RunOptions {
-                    quit: true,
-                    record: true,
-                }))
-            }
-        );
-
-        connect!(
-            context.relm,
-            bookmarks_listbox,
-            connect_key_press_event(_, key),
-            return {
-                use gdk::enums::key;
-                match key.get_keyval() {
-                    key::Tab => (Some(Msg::ShiftFocus(FocusTarget::Entry)), Inhibit(true)),
-                    _ => (None, Inhibit(false)),
-                }
-            }
-        );
-
-        bookmarks_listbox
-    }
-
-    fn gui_init_history_listbox(context: &Context) -> gtk::ListBox {
-        let history_listbox = gtk::ListBox::new();
-        history_listbox.set_hexpand(true);
-        history_listbox.set_vexpand(true);
-        history_listbox.set_valign(gtk::Align::Fill);
-
-        for entry in &context.model.history {
-            let label = gtk::Label::new(Some(entry.as_str()));
-            label.set_halign(gtk::Align::Start);
-            label.set_size_request(-1, 25);
-            history_listbox.add(&label);
-        }
-
-        connect!(
-            context.relm,
-            history_listbox,
-            connect_row_activated(_, row),
-            {
-                let label = row.get_child().unwrap().downcast::<gtk::Label>().unwrap();
-                let cmd = label.get_text().map(|s| s.to_string()).unwrap_or_default();
-                Some(Msg::RunCommand(cmd, RunOptions {
-                    quit: true,
-                    record: true,
-                }))
-            }
-        );
-
-        history_listbox
-    }
-
-    fn gui_init_command_entry(context: &Context) -> gtk::Entry {
-        let command_entry = gtk::Entry::new();
-        command_entry.set_size_request(-1, (context.res_scale)(30));
-
-        connect!(
-            context.relm,
-            command_entry,
-            connect_changed(widget),
-            Some(Msg::CommandInputChanged(widget.get_text().unwrap_or_default()))
-        );
-
-        connect!(
-            context.relm,
-            command_entry,
-            connect_key_press_event(_, key),
-            return {
-                use gdk::enums::key;
-                use gdk::ModifierType;
-                let state = key.get_state();
-
-                match key.get_keyval() {
-                    // Move through list
-                    // key::Up   => (Some(Msg::MoveListSelection(-1)), Inhibit(true)),
-                    // key::Down => (Some(Msg::MoveListSelection( 1)), Inhibit(true)),
-                    key::Down => (Some(Msg::ShiftFocus(FocusTarget::Notebook)), Inhibit(true)),
-
-                    // Run the command
-                    key::Return => {
-                        let source = CommandSource::Entry;
-
-                        let opts = RunOptions {
-                            // Hold control to not quit influence afterwards
-                            quit: !state.contains(ModifierType::CONTROL_MASK),
-
-                            // Hold alt to not record this command
-                            record: !state.contains(ModifierType::MOD1_MASK),
-                        };
-
-                        (Some(Msg::RunCommandFromSource(source, opts)), Inhibit(true))
-                    },
-
-                    // Fill entry with selected bookmark
-                    key::Tab => (Some(Msg::CompleteEntry), Inhibit(true)),
-
-                    _ => (None, Inhibit(false)),
-                }
-            }
-        );
-
-        command_entry
+    fn page_switched(&mut self, page: gtk::Widget) {
+        self.current_tab = page;
     }
 
     fn select_bottom_bookmark(&self) {
@@ -419,10 +308,21 @@ impl Win {
     fn command_input_changed(&mut self, s: String) {
     }
 
-    // FIXME: Doesn't work until the user changes selection manually
     fn move_list_selection(&self, dir: i32) {
-        self.bookmarks_listbox.emit_move_cursor(gtk::MovementStep::DisplayLines, dir);
-        self.command_entry.grab_focus_without_selecting();
+        let listbox = self.current_tab.clone()
+            .downcast::<gtk::ScrolledWindow>().ok()
+            .and_then(|s| s.get_child())
+            .and_then(|w| w.downcast::<gtk::Viewport>().ok())
+            .and_then(|s| s.get_child())
+            .and_then(|w| w.downcast::<gtk::ListBox>().ok());
+
+        if let Some(listbox) = listbox {
+            if listbox.get_selected_row().is_some() {
+                listbox.emit_move_cursor(gtk::MovementStep::DisplayLines, dir);
+            } else {
+                listbox.get_focus_child().map(|w| w.grab_focus());
+            }
+        }
     }
 
     fn get_selected_bookmark(&self) -> Option<String> {
