@@ -18,6 +18,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 mod gui;
+mod page;
 
 const MENU_BOOKMARKS_LABEL: &str = "Bookmarks";
 const MENU_HISTORY_LABEL:   &str = "History";
@@ -64,6 +65,10 @@ pub enum FocusTarget {
     Entry,
 }
 
+pub enum NotebookTab {
+    ListBox(gtk::ListBox),
+}
+
 pub enum CommandSource {
     ListSelection(bool), // true to use entry as fallback
     Entry,
@@ -81,7 +86,6 @@ pub struct Win {
     relm:              Relm<Win>,
     model:             Model,
     window:            Window,
-    bookmarks_listbox: gtk::ListBox,
     command_entry:     gtk::Entry,
     notebook:          gtk::Notebook,
     current_tab:       gtk::Widget,
@@ -181,7 +185,7 @@ impl Widget for Win {
         );
 
         // UI: Bookmarks
-        let bookmarks_listbox = gui::init_bookmarks_listbox(&context);
+        let bookmarks_listbox = page::bookmarks::init_page(&context);
         let scroller = gtk::ScrolledWindow::new(None, None);
         scroller.add(&bookmarks_listbox);
         notebook.add(&scroller);
@@ -191,7 +195,7 @@ impl Widget for Win {
 
         // UI: History
         let scroller = gtk::ScrolledWindow::new(None, None);
-        let history_listbox = gui::init_history_listbox(&context);
+        let history_listbox = page::history::init_page(&context);
         scroller.add(&history_listbox);
         notebook.add(&scroller);
         notebook.set_tab_label_text(&scroller, MENU_HISTORY_LABEL);
@@ -211,17 +215,17 @@ impl Widget for Win {
                 let alt_held = key.get_state().contains(gdk::ModifierType::MOD1_MASK);
                 match key.get_keyval() {
                     key::Escape           => (Some(Msg::Quit),                Inhibit(true)),
-                    key::_1 if alt_held   => (Some(Msg::SelectPage(Abs(0))),  Inhibit(true)),
-                    key::_2 if alt_held   => (Some(Msg::SelectPage(Abs(1))),  Inhibit(true)),
-                    key::_3 if alt_held   => (Some(Msg::SelectPage(Abs(2))),  Inhibit(true)),
-                    key::_4 if alt_held   => (Some(Msg::SelectPage(Abs(3))),  Inhibit(true)),
-                    key::_5 if alt_held   => (Some(Msg::SelectPage(Abs(4))),  Inhibit(true)),
-                    key::_6 if alt_held   => (Some(Msg::SelectPage(Abs(5))),  Inhibit(true)),
-                    key::_7 if alt_held   => (Some(Msg::SelectPage(Abs(6))),  Inhibit(true)),
-                    key::_8 if alt_held   => (Some(Msg::SelectPage(Abs(7))),  Inhibit(true)),
-                    key::_9 if alt_held   => (Some(Msg::SelectPage(Abs(8))),  Inhibit(true)),
-                    key::_0 if alt_held   => (Some(Msg::SelectPage(Abs(9))),  Inhibit(true)),
-                    key::Up if alt_held   => (Some(Msg::SelectPage(Rel(-1))), Inhibit(true)),
+                    key::_1   if alt_held => (Some(Msg::SelectPage(Abs(0))),  Inhibit(true)),
+                    key::_2   if alt_held => (Some(Msg::SelectPage(Abs(1))),  Inhibit(true)),
+                    key::_3   if alt_held => (Some(Msg::SelectPage(Abs(2))),  Inhibit(true)),
+                    key::_4   if alt_held => (Some(Msg::SelectPage(Abs(3))),  Inhibit(true)),
+                    key::_5   if alt_held => (Some(Msg::SelectPage(Abs(4))),  Inhibit(true)),
+                    key::_6   if alt_held => (Some(Msg::SelectPage(Abs(5))),  Inhibit(true)),
+                    key::_7   if alt_held => (Some(Msg::SelectPage(Abs(6))),  Inhibit(true)),
+                    key::_8   if alt_held => (Some(Msg::SelectPage(Abs(7))),  Inhibit(true)),
+                    key::_9   if alt_held => (Some(Msg::SelectPage(Abs(8))),  Inhibit(true)),
+                    key::_0   if alt_held => (Some(Msg::SelectPage(Abs(9))),  Inhibit(true)),
+                    key::Up   if alt_held => (Some(Msg::SelectPage(Rel(-1))), Inhibit(true)),
                     key::Down if alt_held => (Some(Msg::SelectPage(Rel( 1))), Inhibit(true)),
                     _                     => (None,                           Inhibit(false)),
                 }
@@ -258,36 +262,39 @@ impl Widget for Win {
 
         Win {
             relm, model, window,
-            bookmarks_listbox, command_entry, notebook,
+            command_entry, notebook,
             current_tab
         }
     }
 }
 
 impl Win {
-    fn page_switched(&mut self, page: gtk::Widget) {
-        self.current_tab = page;
+    fn get_current_tab(&self) -> NotebookTab {
+        let listbox = self.current_tab.clone()
+            .downcast::<gtk::ScrolledWindow>().ok()
+            .and_then(|s| s.get_child())
+            .and_then(|w| w.downcast::<gtk::Viewport>().ok())
+            .and_then(|s| s.get_child())
+            .and_then(|w| w.downcast::<gtk::ListBox>().ok());
+
+        if let Some(listbox) = listbox {
+            return NotebookTab::ListBox(listbox);
+        }
+
+        panic!("unexpected tab type");
     }
 
-    fn select_bottom_bookmark(&self) {
-        for index in (0..(self.model.bookmarks.len() as i32)).rev() {
-            let row = self.bookmarks_listbox.get_row_at_index(index);
-            if let Some(row) = row.and_then(|r| if r.is_visible() { Some(r) } else { None }) {
-                self.bookmarks_listbox.select_row(Some(&row));
-                break;
-            }
-        }
+    fn page_switched(&mut self, page: gtk::Widget) {
+        self.current_tab = page;
     }
 
     fn shift_focus(&self, target: FocusTarget) {
         match target {
             FocusTarget::Notebook => {
-                if let Some(row) = self.bookmarks_listbox.get_focus_child() {
-                    row.grab_focus();
-                } else if let Some(row) = self.bookmarks_listbox.get_selected_row() {
-                    row.grab_focus();
-                } else {
-                    self.bookmarks_listbox.emit_move_cursor(gtk::MovementStep::DisplayLines, 0);
+                match self.get_current_tab() {
+                    NotebookTab::ListBox(listbox) => {
+                        listbox.get_focus_child().map(|w| w.grab_focus());
+                    },
                 }
             },
             FocusTarget::Entry => {
@@ -309,27 +316,24 @@ impl Win {
     }
 
     fn move_list_selection(&self, dir: i32) {
-        let listbox = self.current_tab.clone()
-            .downcast::<gtk::ScrolledWindow>().ok()
-            .and_then(|s| s.get_child())
-            .and_then(|w| w.downcast::<gtk::Viewport>().ok())
-            .and_then(|s| s.get_child())
-            .and_then(|w| w.downcast::<gtk::ListBox>().ok());
-
-        if let Some(listbox) = listbox {
-            if listbox.get_selected_row().is_some() {
-                listbox.emit_move_cursor(gtk::MovementStep::DisplayLines, dir);
-            } else {
-                listbox.get_focus_child().map(|w| w.grab_focus());
-            }
+        match self.get_current_tab() {
+            NotebookTab::ListBox(listbox) => {
+                if listbox.get_selected_row().is_some() {
+                    listbox.emit_move_cursor(gtk::MovementStep::DisplayLines, dir);
+                } else {
+                    listbox.get_focus_child().map(|w| w.grab_focus());
+                }
+            },
         }
     }
 
     fn get_selected_bookmark(&self) -> Option<String> {
-        self.bookmarks_listbox
-            .get_selected_row()
-            .and_then(|r| if r.is_visible() { Some(r) } else { None })
-            .map(|r| self.model.bookmarks[r.get_index() as usize].clone())
+        match self.get_current_tab() {
+            NotebookTab::ListBox(listbox) => listbox
+                .get_selected_row()
+                .and_then(|r| if r.is_visible() { Some(r) } else { None })
+                .map(|r| self.model.bookmarks[r.get_index() as usize].clone()),
+        }
     }
 
     fn run_command_from_source(&mut self, source: CommandSource, opts: RunOptions) {
