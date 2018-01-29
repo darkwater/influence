@@ -17,13 +17,16 @@ use std::io::prelude::*;
 use std::path::PathBuf;
 use std::process::Command;
 
+#[macro_use]
+mod macros;
+
 mod gui;
 mod page;
 
 const MENU_BOOKMARKS_LABEL: &str = "Bookmarks";
 const MENU_HISTORY_LABEL:   &str = "History";
 
-const HISTORY_MAXLEN: usize = 5;
+const HISTORY_MAXLEN: usize = 50;
 
 pub enum FileStore {
     Bookmarks,
