@@ -371,6 +371,7 @@ impl Win {
         // Select first focussable (non-header) row
         for row in self.results_listbox.get_children() {
             if row.get_can_focus() {
+                self.results_listbox.set_focus_child(&row);
                 self.results_listbox.select_row(Some(&row.downcast().unwrap()));
                 break;
             }
@@ -383,6 +384,9 @@ impl Win {
         match self.get_current_tab() {
             NotebookTab::ListBox(listbox) => {
                 if listbox.get_selected_row().is_some() {
+                    listbox.get_focus_child().map(|w| {
+                        w.grab_focus();
+                    });
                     listbox.emit_move_cursor(gtk::MovementStep::DisplayLines, dir);
                 } else {
                     listbox.get_focus_child().map(|w| {
