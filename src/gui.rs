@@ -23,7 +23,7 @@ pub fn init_command_entry(context: &Context) -> gtk::Entry {
 
             let state     = ev.get_state();
             let ctrl_held = state.contains(ModifierType::CONTROL_MASK);
-            let alt_held = state.contains(ModifierType::MOD1_MASK);
+            let alt_held  = state.contains(ModifierType::MOD1_MASK);
 
             match ev.get_keyval() {
                 // Move through list

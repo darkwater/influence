@@ -53,6 +53,7 @@ pub enum Msg {
     CommandInputChanged(String),
     PageSwitched(gtk::Widget),
     MoveListSelection(i32),
+    RemoveHistoryEntry(i32),
     RunCommandFromSource(CommandSource, RunOptions),
     RunCommand(String, RunOptions),
     ShiftFocus(FocusTarget),
@@ -92,6 +93,7 @@ pub struct Win {
     relm:            Relm<Win>,
     model:           Model,
     window:          Window,
+    history_listbox: gtk::ListBox,
     results_listbox: gtk::ListBox,
     command_entry:   gtk::Entry,
     notebook:        gtk::Notebook,
@@ -125,6 +127,7 @@ impl Update for Win {
             Msg::CommandInputChanged(s)          => self.command_input_changed(s),
             Msg::PageSwitched(page)              => self.page_switched(page),
             Msg::MoveListSelection(dir)          => self.move_list_selection(dir),
+            Msg::RemoveHistoryEntry(i)           => self.remove_history_entry(i),
             Msg::RunCommandFromSource(src, opts) => self.run_command_from_source(src, opts),
             Msg::RunCommand(s, opts)             => self.run_command(s, opts),
             Msg::ShiftFocus(target)              => self.shift_focus(target),
@@ -269,7 +272,7 @@ impl Widget for Win {
 
         Win {
             relm, model, window,
-            results_listbox, command_entry, notebook,
+            history_listbox, results_listbox, command_entry, notebook,
             current_tab
         }
     }
@@ -391,7 +394,22 @@ impl Win {
         }
     }
 
-    fn get_selected_bookmark(&self) -> Option<String> {
+    fn remove_history_entry(&mut self, index: i32) {
+        self.model.history.remove(index as usize);
+
+        self.history_listbox.get_row_at_index(index)
+            .map(|r| self.history_listbox.remove(&r));
+
+        self.history_listbox.get_row_at_index(index)
+            .or_else(|| self.history_listbox.get_row_at_index(index - 1))
+            .map(|r| { self.history_listbox.select_row(&r); r.grab_focus(); });
+
+        if let Err(e) = write_file_list(FileStore::History, &self.model.history) {
+            println!("unable to write history: {}", e);
+        }
+    }
+
+    fn get_selected_command(&self) -> Option<String> {
         match self.get_current_tab() {
             NotebookTab::ListBox(listbox) => listbox
                 .get_selected_row()
@@ -405,7 +423,7 @@ impl Win {
     fn run_command_from_source(&mut self, source: CommandSource, opts: RunOptions) {
         match source {
             CommandSource::ListSelection(or_entry) => {
-                if let Some(bookmark) = self.get_selected_bookmark() {
+                if let Some(bookmark) = self.get_selected_command() {
                     self.run_command(bookmark, opts);
                 } else if or_entry {
                     self.run_command_from_source(CommandSource::Entry, opts);
@@ -432,7 +450,7 @@ impl Win {
             self.model.history.insert(0, cmd);
             self.model.history.truncate(HISTORY_MAXLEN);
             if let Err(e) = write_file_list(FileStore::History, &self.model.history) {
-                println!("unable to read bookmarks: {}", e);
+                println!("unable to write history: {}", e);
             }
         }
 
@@ -442,7 +460,7 @@ impl Win {
     }
 
     fn complete_entry(&self) {
-        if let Some(bookmark) = self.get_selected_bookmark() {
+        if let Some(bookmark) = self.get_selected_command() {
             self.command_entry.set_text(&bookmark);
             self.command_entry.set_position(bookmark.len() as i32);
         }

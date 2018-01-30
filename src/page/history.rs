@@ -36,11 +36,21 @@ pub fn init_page(context: &Context) -> gtk::ListBox {
     connect!(
         context.relm,
         listbox,
-        connect_key_press_event(listbox, key),
+        connect_key_press_event(listbox, ev),
         return {
             use gdk::enums::key;
-            match key.get_keyval() {
+            use gdk::ModifierType;
+
+            let state      = ev.get_state();
+            let shift_held = state.contains(ModifierType::SHIFT_MASK);
+
+            match ev.get_keyval() {
                 key::Tab => (Some(Msg::ShiftFocus(FocusTarget::Entry)), Inhibit(true)),
+
+                key::Delete if shift_held => (
+                    listbox.get_selected_row().map(|row| Msg::RemoveHistoryEntry(row.get_index())),
+                    Inhibit(true)
+                ),
 
                 k @ key::Up |
                 k @ key::Down => listbox_skip_separators!(listbox, k),

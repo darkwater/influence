@@ -1,5 +1,5 @@
 use gtk;
-use gtk::{MovementStep, Orientation};
+use gtk::MovementStep;
 use gtk::prelude::*;
 use {Context, FocusTarget, Msg, RunOptions};
 
