@@ -9,25 +9,6 @@ pub fn init_page(context: &Context) -> gtk::ListBox {
     listbox.set_vexpand(true);
     listbox.set_valign(gtk::Align::Fill);
 
-    for bookmark in &context.model.bookmarks {
-        if bookmark == "" {
-            let row = gtk::ListBoxRow::new();
-            let sep = gtk::Separator::new(Orientation::Horizontal);
-            row.set_sensitive(false);
-            row.set_can_focus(false);
-            row.add(&sep);
-            listbox.add(&row);
-        } else {
-            let label = gtk::Label::new(Some(bookmark.as_str()));
-            label.set_halign(gtk::Align::Start);
-            listbox.add(&label);
-        }
-    }
-
-    if let Some(first_row) = listbox.get_row_at_index(0) {
-        listbox.set_focus_child(&first_row);
-    }
-
     connect!(
         context.relm,
         listbox,

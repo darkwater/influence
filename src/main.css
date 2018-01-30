@@ -4,7 +4,14 @@ list > row:focus {
 }
 
 list > row label {
-    padding: 0.4em 0.9em;
+    min-height: 0;
+    padding: 0.5em 0.9em;
+}
+
+list > row.header label {
+    padding: 0.7em 0.9em 0.3em;
+    font-weight: bold;
+    font-size: 0.9em;
 }
 
 entry {

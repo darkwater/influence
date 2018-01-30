@@ -9,6 +9,7 @@ extern crate relm_derive;
 
 use gdk::prelude::*;
 use gtk::Window;
+use gtk::Orientation;
 use gtk::prelude::*;
 use relm::{Relm, Update, Widget};
 use std::fs::File;
@@ -23,8 +24,9 @@ mod macros;
 mod gui;
 mod page;
 
-const MENU_BOOKMARKS_LABEL: &str = "Bookmarks";
-const MENU_HISTORY_LABEL:   &str = "History";
+const BOOKMARKS_LABEL: &str = "Bookmarks";
+const HISTORY_LABEL:   &str = "History";
+const RESULTS_LABEL:   &str = "Results";
 
 const HISTORY_MAXLEN: usize = 50;
 
@@ -41,8 +43,9 @@ pub struct Context<'a> {
 }
 
 pub struct Model {
-    bookmarks: Vec<String>,
-    history: Vec<String>,
+    bookmarks:          Vec<String>,
+    history:            Vec<String>,
+    focus_results_page: bool,
 }
 
 #[derive(Msg)]
@@ -86,12 +89,13 @@ pub struct RunOptions {
 }
 
 pub struct Win {
-    relm:              Relm<Win>,
-    model:             Model,
-    window:            Window,
-    command_entry:     gtk::Entry,
-    notebook:          gtk::Notebook,
-    current_tab:       gtk::Widget,
+    relm:            Relm<Win>,
+    model:           Model,
+    window:          Window,
+    results_listbox: gtk::ListBox,
+    command_entry:   gtk::Entry,
+    notebook:        gtk::Notebook,
+    current_tab:     gtk::Widget,
 }
 
 impl Update for Win {
@@ -110,7 +114,10 @@ impl Update for Win {
             Default::default()
         });
 
-        Model { bookmarks, history }
+        Model {
+            focus_results_page: true,
+            bookmarks, history,
+        }
     }
 
     fn update(&mut self, event: Self::Msg) {
@@ -192,16 +199,23 @@ impl Widget for Win {
         let scroller = gtk::ScrolledWindow::new(None, None);
         scroller.add(&bookmarks_listbox);
         notebook.add(&scroller);
-        notebook.set_tab_label_text(&scroller, MENU_BOOKMARKS_LABEL);
+        notebook.set_tab_label_text(&scroller, BOOKMARKS_LABEL);
 
         let current_tab = bookmarks_listbox.clone().upcast();
 
         // UI: History
-        let scroller = gtk::ScrolledWindow::new(None, None);
         let history_listbox = page::history::init_page(&context);
+        let scroller = gtk::ScrolledWindow::new(None, None);
         scroller.add(&history_listbox);
         notebook.add(&scroller);
-        notebook.set_tab_label_text(&scroller, MENU_HISTORY_LABEL);
+        notebook.set_tab_label_text(&scroller, HISTORY_LABEL);
+
+        // UI: Search results
+        let results_listbox = page::results::init_page(&context);
+        let scroller = gtk::ScrolledWindow::new(None, None);
+        scroller.add(&results_listbox);
+        notebook.add(&scroller);
+        notebook.set_tab_label_text(&scroller, RESULTS_LABEL);
 
         // UI: Command input
         let command_entry = gui::init_command_entry(&context);
@@ -251,21 +265,11 @@ impl Widget for Win {
         window.show_all();
         command_entry.grab_focus();
 
-        // window
-        //     .get_window()
-        //     .unwrap()
-        //     .set_background_rgba(&gdk::RGBA {
-        //         red: 0x1d as f64 / 255.0,
-        //         green: 0x1f as f64 / 255.0,
-        //         blue: 0x21 as f64 / 255.0,
-        //         alpha: 0xeb as f64 / 255.0,
-        //     });
-
         let relm = relm.clone();
 
         Win {
             relm, model, window,
-            command_entry, notebook,
+            results_listbox, command_entry, notebook,
             current_tab
         }
     }
@@ -316,6 +320,60 @@ impl Win {
     }
 
     fn command_input_changed(&mut self, s: String) {
+        if self.model.focus_results_page {
+            self.results_listbox.get_parent()
+                .and_then(|viewport| viewport.get_parent())
+                .and_then(|scroller| self.notebook.page_num(&scroller))
+                .map(     |num|      self.notebook.set_property_page(num as i32));
+
+            self.model.focus_results_page = false;
+        }
+
+        for row in self.results_listbox.get_children() {
+            self.results_listbox.remove(&row);
+        }
+
+        if s == "" { return }
+
+        for bookmark in self.model.bookmarks.iter() {
+            if bookmark.contains(&s) {
+                let label = gtk::Label::new(Some(bookmark.as_str()));
+                label.set_halign(gtk::Align::Start);
+                self.results_listbox.add(&label);
+            }
+        }
+
+        let row   = gtk::ListBoxRow::new();
+        let box_  = gtk::Box::new(Orientation::Vertical, 0);
+        let sep   = gtk::Separator::new(Orientation::Horizontal);
+        let label = gtk::Label::new(Some(HISTORY_LABEL));
+        label.set_halign(gtk::Align::Start);
+        label.set_size_request(-1, 25);
+        row.set_sensitive(false);
+        row.set_can_focus(false);
+        box_.add(&sep);
+        box_.add(&label);
+        row.add(&box_);
+        row.get_style_context().map(|ctx| ctx.add_class("header"));
+        self.results_listbox.add(&row);
+
+        for entry in self.model.history.iter() {
+            if entry.contains(&s) {
+                let label = gtk::Label::new(Some(entry.as_str()));
+                label.set_halign(gtk::Align::Start);
+                self.results_listbox.add(&label);
+            }
+        }
+
+        // Select first focussable (non-header) row
+        for row in self.results_listbox.get_children() {
+            if row.get_can_focus() {
+                self.results_listbox.select_row(Some(&row.downcast().unwrap()));
+                break;
+            }
+        }
+
+        self.results_listbox.show_all();
     }
 
     fn move_list_selection(&self, dir: i32) {
@@ -324,7 +382,10 @@ impl Win {
                 if listbox.get_selected_row().is_some() {
                     listbox.emit_move_cursor(gtk::MovementStep::DisplayLines, dir);
                 } else {
-                    listbox.get_focus_child().map(|w| w.grab_focus());
+                    listbox.get_focus_child().map(|w| {
+                        w.grab_focus();
+                        listbox.select_row(Some(&w.downcast().unwrap()));
+                    });
                 }
             },
         }
@@ -334,8 +395,10 @@ impl Win {
         match self.get_current_tab() {
             NotebookTab::ListBox(listbox) => listbox
                 .get_selected_row()
-                .and_then(|r| if r.is_visible() { Some(r) } else { None })
-                .map(|r| self.model.bookmarks[r.get_index() as usize].clone()),
+                .and_then(|row|   if row.is_visible() { Some(row) } else { None })
+                .and_then(|row|   row.get_child())
+                .and_then(|label| label.downcast::<gtk::Label>().ok())
+                .and_then(|label| label.get_text()),
         }
     }
 

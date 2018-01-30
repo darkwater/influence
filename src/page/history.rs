@@ -12,7 +12,6 @@ pub fn init_page(context: &Context) -> gtk::ListBox {
     for entry in &context.model.history {
         let label = gtk::Label::new(Some(entry.as_str()));
         label.set_halign(gtk::Align::Start);
-        label.set_size_request(-1, 25);
         listbox.add(&label);
     }
 
