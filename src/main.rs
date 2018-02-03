@@ -1,5 +1,6 @@
-#![feature(conservative_impl_trait, nll)]
+#![feature(nll)]
 
+extern crate itertools;
 extern crate gdk;
 extern crate gtk;
 #[macro_use]
@@ -8,13 +9,17 @@ extern crate relm;
 extern crate relm_derive;
 
 use gdk::prelude::*;
-use gtk::Window;
 use gtk::Orientation;
+use gtk::Window;
 use gtk::prelude::*;
+use itertools::Itertools;
 use relm::{Relm, Update, Widget};
+use std::env;
 use std::fs::File;
+use std::fs;
 use std::io::BufWriter;
 use std::io::prelude::*;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -27,6 +32,7 @@ mod page;
 const BOOKMARKS_LABEL: &str = "Bookmarks";
 const HISTORY_LABEL:   &str = "History";
 const RESULTS_LABEL:   &str = "Results";
+const PROGRAMS_LABEL:  &str = "Programs";
 
 const HISTORY_MAXLEN: usize = 50;
 
@@ -45,6 +51,7 @@ pub struct Context<'a> {
 pub struct Model {
     bookmarks:          Vec<String>,
     history:            Vec<String>,
+    programs:           Vec<String>,
     focus_results_page: bool,
 }
 
@@ -116,9 +123,11 @@ impl Update for Win {
             Default::default()
         });
 
+        let programs = get_path_commands();
+
         Model {
             focus_results_page: true,
-            bookmarks, history,
+            bookmarks, history, programs,
         }
     }
 
@@ -360,8 +369,40 @@ impl Win {
         row.get_style_context().map(|ctx| ctx.add_class("header"));
         self.results_listbox.add(&row);
 
+        let mut limiter = 0;
+        let limit = 5;
         for entry in self.model.history.iter() {
             if entry.contains(&s) {
+                limiter += 1;
+                if limiter > limit { break; }
+
+                let label = gtk::Label::new(Some(entry.as_str()));
+                label.set_halign(gtk::Align::Start);
+                self.results_listbox.add(&label);
+            }
+        }
+
+        let row   = gtk::ListBoxRow::new();
+        let box_  = gtk::Box::new(Orientation::Vertical, 0);
+        let sep   = gtk::Separator::new(Orientation::Horizontal);
+        let label = gtk::Label::new(Some(PROGRAMS_LABEL));
+        label.set_halign(gtk::Align::Start);
+        label.set_size_request(-1, 25);
+        row.set_sensitive(false);
+        row.set_can_focus(false);
+        box_.add(&sep);
+        box_.add(&label);
+        row.add(&box_);
+        row.get_style_context().map(|ctx| ctx.add_class("header"));
+        self.results_listbox.add(&row);
+
+        let mut limiter = 0;
+        let limit = 10;
+        for entry in self.model.programs.iter() {
+            if entry.contains(&s) {
+                limiter += 1;
+                if limiter > limit { break; }
+
                 let label = gtk::Label::new(Some(entry.as_str()));
                 label.set_halign(gtk::Align::Start);
                 self.results_listbox.add(&label);
@@ -508,6 +549,22 @@ fn read_file_list(store: FileStore) -> Result<Vec<String>, Box<std::error::Error
         .collect::<Vec<String>>();
 
     Ok(bookmarks)
+}
+
+/// Get all executables in the user's PATH
+fn get_path_commands() -> Vec<String> {
+    env::var("PATH")
+        .ok().unwrap_or_else(String::new)
+        .split(":")
+        .map(fs::read_dir)
+        .flat_map(Result::ok)
+        .flat_map(Itertools::flatten)
+        .filter(|file|
+            file.metadata().ok()
+                .map_or(false, |meta| meta.permissions().mode() & 0o111 > 0))
+        .flat_map(|file| file.file_name().into_string())
+        .unique()
+        .sorted()
 }
 
 fn main() {
