@@ -21,9 +21,10 @@ pub fn init_command_entry(context: &Context) -> gtk::Entry {
             use gdk::enums::key;
             use gdk::ModifierType;
 
-            let state     = ev.get_state();
-            let ctrl_held = state.contains(ModifierType::CONTROL_MASK);
-            let alt_held  = state.contains(ModifierType::MOD1_MASK);
+            let state      = ev.get_state();
+            let ctrl_held  = state.contains(ModifierType::CONTROL_MASK);
+            let shift_held = state.contains(ModifierType::SHIFT_MASK);
+            let alt_held   = state.contains(ModifierType::MOD1_MASK);
 
             match ev.get_keyval() {
                 // Move through list
@@ -35,7 +36,11 @@ pub fn init_command_entry(context: &Context) -> gtk::Entry {
 
                 // Run the command
                 key::Return => (Some(Msg::RunCommandFromSource(
-                            CommandSource::Entry,
+                            if shift_held {
+                                CommandSource::Entry
+                            } else {
+                                CommandSource::ListSelection(true)
+                            },
                             RunOptions {
                                 quit:   !ctrl_held,
                                 record: !alt_held,
